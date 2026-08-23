@@ -331,4 +331,23 @@ The Autonomous System Controller demonstrates **strong overall reliability** wit
 
 The **critical issue** with Phase 5 model refresh should be addressed before production deployment. The Ollama dependency, while not a bug, significantly affects system intelligence when unavailable and should be better handled with improved fallbacks.
 
+---
+
+## 🔄 RECONCILIATION WITH REALITY (2026-08-23, by Dev)
+
+Status update on this report's findings as of 2026-08-23:
+
+| Finding in report | Current status |
+|---|---|
+| #1 Phase 5 Model Refresh Failure (CRITICAL) | **FIXED** — commit ad7bb91 (Team Lead): None `result` dicts hardened (`(exp.get("result") or {}).get(...)`) plus stale bytecode cleanup. No longer fires on commands. |
+| #2 Ollama Connection Failures | **IMPROVED** — commit 2044643: VRAM-sized model set (qwen2.5:3b roles), 120s timeouts via asyncio.wait_for, fixed fallback chain aborting early. Degradation to deterministic fallback remains by design when Ollama is offline. Auto-start still not implemented. |
+| #3 Network Command Routing through council | **OPEN** — not yet addressed; network status commands may still route indirectly. Needs a routing fix in main.py (Team Lead's module). |
+| #4 Council fallback mechanisms | **PARTIALLY ADDRESSED** — fallback chain repaired and models sized to hardware; deterministic all-models-fail fallback and decision caching remain open recommendations. |
+| Slow command processing (5-7s) | **PARTIALLY IMPROVED** — keep_alive 5m keeps models warm instead of reloading per call. Caching not implemented. |
+| Memory leaks: none detected | Consistent with current observations. |
+| "Requires Phase 5 bug fix before deployment" | This gate is now cleared (commit ad7bb91). Remaining pre-production items: business_agent cwd path fix (#6), voice end-to-end check, network routing (#3 above). |
+
+Test baseline at reconciliation: 113 passed (test_basic.py + test_phase7_agi.py), 2026-08-23.
+
+
 **Overall Assessment**: The system is **85% production-ready** and represents a significant achievement in AGI development with comprehensive self-improving capabilities.

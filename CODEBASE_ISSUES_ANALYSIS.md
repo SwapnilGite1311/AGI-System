@@ -208,3 +208,23 @@ The system is now more stable and reliable with these fixes applied. The remaini
 
 **Overall System Health**: IMPROVED
 **Production Readiness**: INCREASED
+
+---
+
+## 🔄 RECONCILIATION WITH REALITY (2026-08-23, by Dev)
+
+Audit of this document against the current codebase and git history:
+
+| Claim in this doc | Reality check |
+|---|---|
+| Phase 5 Model Refresh Bug ✅ FIXED | **PARTIALLY TRUE / WAS STILL BROKEN.** The `_load() or default` pattern exists, but the crash `'NoneType' object has no attribute 'get'` kept firing on every command through 2026-08-22 logs (`logs/asc_2026-08-22_21-11-17_898121.log`). Fully fixed 2026-08-23 by Team Lead (commit ad7bb91): root cause was None `result` dicts inside experiences; `(exp.get("result") or {}).get("success", True)` + stale-bytecode cleanup. Mark as genuinely FIXED as of commit ad7bb91. |
+| Resource Leak in Audio Recording ✅ FIXED | VERIFIED PRESENT in main.py (try/finally around stream). Superseded by Team Lead's full VAD rewrite of `_record_audio` (commit e35fd30) which keeps the same resource discipline. |
+| Subprocess Process Management ✅ FIXED | VERIFIED PRESENT in agents/system_agent.py (`managed_processes` tracking + cleanup). |
+| Division by Zero Issues ✅ FIXED | Spot-checked adaptive_engine.py guard — present. Other listed sites not individually re-audited. |
+| "Fix Success Rate: 100% for critical issues" | **MISLEADING at time of writing**: the critical Phase 5 bug was claimed fixed on 2026-08-22 but still reproduced. True only after commit ad7bb91 (2026-08-23). |
+
+Current test baseline: 113 passed (tests/test_basic.py + test_phase7_agi.py), 2026-08-23.
+Model architecture was reworked for VRAM fit by Team Lead (commit 2044643): council roles -> qwen2.5:3b, speed -> gemma2:2b, backup -> tinyllama, vision llava:7b, 120s timeouts, keep_alive 5m.
+Dead config blocks (memory.redis, memory.chromadb, api, communication twilio/whatsapp, audio.wake_word) removed from settings.json (commit 8cdcbed).
+Web agent always-False `submission_verified` fixed with real DOM verification (commit 9a81502).
+Remaining open items: business_agent.py cwd-relative data paths (task #6), voice end-to-end human verification, broader exception handling and type-safety items listed under MODERATE ISSUES above.

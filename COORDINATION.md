@@ -64,7 +64,7 @@ Shared no-touch zones: test_fix1_smoke.py belongs to Team Lead.
 | 5 | web_agent.py line 648: `False if submitted else False` always False. Make it actually verify submission success where feasible, else set honest value. | Dev | DONE |
 | 6 | business_agent.py path resolution | Bon | IN-PROGRESS (Bon active, started after ack) |
 | 7 | settings.json dead config removal + memory.episodic extension | Dev | DONE (8cdcbed + episodic pending) |
-| 8 | Reconcile Documents/CODEBASE_ISSUES_ANALYSIS.md + SYSTEM_BUG_REPORT.md with reality: mark what is now fixed (model sizing done via commits 2044643+), correct false FIXED claims (Phase 5), note remaining items. Factual doc update, no code changes. | Dev | TODO |
+| 8 | Reconcile Documents/CODEBASE_ISSUES_ANALYSIS.md + SYSTEM_BUG_REPORT.md with reality: mark what is now fixed (model sizing done via commits 2044643+), correct false FIXED claims (Phase 5), note remaining items. Factual doc update, no code changes. | Dev | DONE |
 
 ====================================================================
 ## TEAM LEAD LOG
@@ -95,7 +95,7 @@ Shared no-touch zones: test_fix1_smoke.py belongs to Team Lead.
 ## DEV LOG
 ====================================================================
 - 2026-08-23 - Dev: Task #5 DONE. Bug: web_agent.py intelligent_form_fill DOM path returned `"submission_verified": False if submitted else False` — always False, no verification ever attempted. Fix: (1) new method `verify_dom_submission()` in agents/web_agent.py (~line 371) reads live page via `browser_driver.page.content()`, strips tags, applies success/error keyword heuristic consistent with the keyboard-fallback path; verdicts: verified / rejected / unknown / unverified. (2) Wired into DOM fill path after submit click/Enter with 1s settle wait; result dict now carries real `submission_verified` + honest `verification_details`. If page content is unreadable it reports verified=False with "Could not read page content" — never fakes success. Also removed stale hardcoded "Filled via browser-driver" detail string. Proof: py_compile passes on agents/web_agent.py; pytest tests/test_basic.py 83 passed (no regressions); NEW tests/test_dev_submission_verification.py 4 passed covering success-page verify, error-page reject, unreadable-page honest False, and not-submitted case. Combined run: 87 passed. (agents/web_agent.py, tests/test_dev_submission_verification.py)
-- (append entries here, prefix each with date - Dev:)
+- 2026-08-23 - Dev: Task #8 DONE. Added "RECONCILIATION WITH REALITY" sections to CODEBASE_ISSUES_ANALYSIS.md and Documents/SYSTEM_BUG_REPORT.md. Verified claims vs code/git: Phase 5 "FIXED" claim was false on 2026-08-22 (crash still in logs) — genuinely fixed only by Team Lead commit ad7bb91; audio/subprocess/divzero fixes verified present in code; model rework 2044643, config cleanup 8cdcbed, submission verification 9a81502 noted. Open items flagged: network command routing (main.py, Team Lead), business_agent cwd paths (Bon, task #6), voice E2E human test. No code changes. Proof: pytest test_basic + test_phase7_agi = 113 passed. (CODEBASE_ISSUES_ANALYSIS.md, Documents/SYSTEM_BUG_REPORT.md)
 
 ====================================================================
 ## SUPERVISOR ALERTS
