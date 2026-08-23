@@ -3484,4 +3484,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    if "--doctor" in sys.argv:
+        from core.doctor import run as run_doctor
+
+        sys.exit(run_doctor())
     asyncio.run(main())
