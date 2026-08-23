@@ -53,17 +53,6 @@
   },
 
   "memory": {
-    "short_term": {
-      "type": "redis",
-      "host": "localhost",
-      "port": 6379,
-      "ttl": 3600
-    },
-    "long_term": {
-      "type": "chromadb",
-      "path": "./data/chromadb",
-      "collection": "memories"
-    },
     "episodic": {
       "type": "sqlite",
       "path": "./data/episodes.db"
@@ -78,25 +67,10 @@
   },
 
   "audio": {
-    "wake_word": "hey buddy",
     "voice_enabled": true,
     "tts_engine": "pyttsx3",
     "stt_model": "whisper",
     "voice_service_url": "http://localhost:5000"
-  },
-
-  "communication": {
-    "phone": {
-      "enabled": false,
-      "provider": "twilio",
-      "account_sid": "",
-      "auth_token": "",
-      "phone_number": ""
-    },
-    "whatsapp": {
-      "enabled": false,
-      "session_path": "./data/whatsapp_session"
-    }
   },
 
   "security": {
@@ -104,12 +78,6 @@
     "auth_required": false,
     "audit_logging": true,
     "privacy_mode": false
-  },
-
-  "api": {
-    "host": "0.0.0.0",
-    "port": 3000,
-    "cors_enabled": true
   },
 
   "execution": {

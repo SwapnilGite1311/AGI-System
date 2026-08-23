@@ -29,17 +29,20 @@ STOP_WORDS = {
 }
 
 
-class _CommandRouteNet(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int, output_size: int):
-        super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, output_size),
-        )
+if nn is not None:
+    class _CommandRouteNet(nn.Module):
+        def __init__(self, input_size: int, hidden_size: int, output_size: int):
+            super().__init__()
+            self.layers = nn.Sequential(
+                nn.Linear(input_size, hidden_size),
+                nn.ReLU(),
+                nn.Linear(hidden_size, output_size),
+            )
 
-    def forward(self, features):
-        return self.layers(features)
+        def forward(self, features):
+            return self.layers(features)
+else:
+    _CommandRouteNet = None  # torch unavailable; fallback scorer path is used
 
 
 class NeuralCommandModel:
@@ -163,8 +166,10 @@ class NeuralCommandModel:
         return examples
 
     def _label_from_experience(self, experience: Dict[str, Any]) -> Optional[str]:
-        strategy = experience.get("strategy", {}) or {}
-        intent = strategy.get("intent", {}) if isinstance(strategy, dict) else {}
+        strategy = experience.get("strategy") or {}
+        intent = strategy.get("intent") if isinstance(strategy, dict) else {}
+        if not isinstance(intent, dict):
+            intent = {}
         intent_type = intent.get("type")
 
         if intent_type:
