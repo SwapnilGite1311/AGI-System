@@ -91,7 +91,7 @@ class OfflinePreferenceModel:
         if not effective_experiences:
             effective_experiences = self._get_seed_experiences()
 
-        successful = [exp for exp in effective_experiences if exp.get("result", {}).get("success", True)]
+        successful = [exp for exp in effective_experiences if (exp.get("result") or {}).get("success", True)]
         clusters = self._build_clusters(successful)
         preference_candidates = self._build_preference_candidates(successful, preferences or {})
         feature_index = self._build_feature_index(successful)

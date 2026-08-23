@@ -159,7 +159,7 @@ class NeuralCommandModel:
                 continue
 
             reward = float(experience.get("reward", 0.0) or 0.0)
-            success = bool(experience.get("result", {}).get("success"))
+            success = bool((experience.get("result") or {}).get("success"))
             if not success and reward < 0.4:
                 continue
             examples.append((command, label, max(0.2, min(1.0, reward or 0.7))))
@@ -417,12 +417,21 @@ class NeuralCommandModel:
                     centroid[idx] += value
             centroids[label] = [value / len(vectors) for value in centroid]
 
+        def _score_against_centroids(vector: List[float]) -> List[float]:
+            # Score against the freshly built centroids — self.state may be
+            # stale/empty during fit(), so _predict_centroid can't be reused here.
+            raw_scores = [max(0.0, self._cosine(vector, centroids.get(label, []))) for label in labels]
+            total = sum(raw_scores)
+            if total <= 0:
+                return [1.0 / len(labels) for _ in labels] if labels else []
+            return [score / total for score in raw_scores]
+
         # Simple centroid evaluation (leave-one-out cross-validation)
         total_correct = 0
         total_samples = 0
         for command, label, _ in examples:
             vector = self._vectorize(command, vocabulary)
-            scores = self._predict_centroid(vector)
+            scores = _score_against_centroids(vector)
             best_index = max(range(len(scores)), key=lambda idx: scores[idx])
             predicted = labels[best_index] if best_index < len(labels) else "unknown"
             if predicted == label:
