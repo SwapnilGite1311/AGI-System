@@ -52,13 +52,6 @@
     "fallback_chain": ["gemma2:2b", "tinyllama:latest"]
   },
 
-  "memory": {
-    "episodic": {
-      "type": "sqlite",
-      "path": "./data/episodes.db"
-    }
-  },
-
   "vision": {
     "screenshot_interval": 2,
     "ocr_enabled": true,

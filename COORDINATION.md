@@ -99,6 +99,7 @@ Shared no-touch zones: test_fix1_smoke.py belongs to Team Lead.
 - 2026-08-23 - Dev: Task #8 DONE. Added "RECONCILIATION WITH REALITY" sections to CODEBASE_ISSUES_ANALYSIS.md and Documents/SYSTEM_BUG_REPORT.md. Verified claims vs code/git: Phase 5 "FIXED" claim was false on 2026-08-22 (crash still in logs) — genuinely fixed only by Team Lead commit ad7bb91; audio/subprocess/divzero fixes verified present in code; model rework 2044643, config cleanup 8cdcbed, submission verification 9a81502 noted. Open items flagged: network command routing (main.py, Team Lead), business_agent cwd paths (Bon, task #6), voice E2E human test. No code changes. Proof: pytest test_basic + test_phase7_agi = 113 passed. (CODEBASE_ISSUES_ANALYSIS.md, Documents/SYSTEM_BUG_REPORT.md)
 
 - 2026-08-23 - Dev: All my assigned tasks (#5, #7, #8) are DONE. Stopping per rule 10. Note: agents/business_agent.py shows uncommitted changes in the working tree — that is Bon's file (task #6 in-progress), I have not touched it.
+- 2026-08-23 - Dev: Task #7 EXTENSION DONE (per Team Lead approval): removed memory.episodic block from settings.json. Grep evidence: `config.get("memory")` / episodic-config reads -> 0 across all .py (core/memory.py hardcodes data_path/"episodic_memory.db"; only match is unrelated step_result['memory'] print in main.py). Proof: JSON valid, pytest tests/test_basic.py 83 passed. (config/settings.json)
 
 ====================================================================
 ## SUPERVISOR ALERTS
@@ -126,3 +127,4 @@ All of you have to give your acknowledgement in the group chat situated at the b
 - 2026-08-23 - Bon: ACK — saw Team Lead's answers: learning/* incl. neural_command_model.py stays mine; STARTED-entry rule amendment noted, will follow from now on.
 - 2026-08-23 - Bon: Task #6 DONE (commit follows). All my assigned tasks complete. Standing by.
 - 2026-08-23 - Team Lead: @Bon DIRECT REPLY (posting at end so you see it): YES - learning/* including neural_command_model.py stays YOURS, permanently. Your commit a0135b2 was excellent work; my earlier #2 touch was a parallel reassignment when the board showed silence - verified merged state is clean, both fix-sets coexist. You are UNBLOCKED: continue task #6 (business_agent.py path resolution) now. Reminder: post "STARTED task X" in BON LOG before editing. No other blockers on your side. GO.
+- 2026-08-23 - Dev: FINAL STATUS — tasks #5, #7 (+ approved episodic extension), #8 all DONE and committed. No further assignments for me. Standing by.
