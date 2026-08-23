@@ -1248,12 +1248,17 @@ class AutonomousSystemController:
             normalized,
         )
         if web_only:
-            return {
-                "type": "browser_action",
-                "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
-                "action": "search",
-                "target": web_only.group("target").strip(),
-            }
+            target_text = web_only.group("target").strip()
+            # "google calendar/docs/drive..." name Google PRODUCTS, not a search
+            # verb + query; let specific intent branches handle them.
+            google_products = ("calendar", "docs", "drive", "meet", "sheets", "slides", "keep", "forms")
+            if not (web_only.group(0).lower().startswith("google ") and target_text.split() and target_text.split()[0] in google_products):
+                return {
+                    "type": "browser_action",
+                    "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                    "action": "search",
+                    "target": target_text,
+                }
 
         navigate_only = re.match(
             r"^(?:go to|navigate to|open url)\s+(?P<target>.+)$",
@@ -1388,7 +1393,7 @@ class AutonomousSystemController:
         if any(phrase in normalized for phrase in ["stock", "stock price", "stock market"]):
             return {"type": "stock_api"}
 
-        if any(phrase in normalized for phrase in ["business dashboard", "bi dashboard", "analytics dashboard"]):
+        if any(phrase in normalized for phrase in ["business dashboard", "business analytics", "kpi dashboard"]):
             return {"type": "business_dashboard"}
 
         if any(phrase in normalized for phrase in ["add team member", "team member", "add to team"]):
@@ -1455,7 +1460,7 @@ class AutonomousSystemController:
         if any(phrase in normalized for phrase in ["gdpr compliance", "compliance check", "regulatory compliance"]):
             return {"type": "gdpr_compliance"}
 
-        if any(phrase in normalized for phrase in ["bi dashboard", "analytics dashboard", "business dashboard"]):
+        if any(phrase in normalized for phrase in ["bi dashboard", "analytics dashboard", "power bi"]):
             return {"type": "bi_dashboard"}
 
         if any(phrase in normalized for phrase in ["create report", "analytics report", "generate report"]):
