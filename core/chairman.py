@@ -176,10 +176,10 @@ Task: {task}
 Proposed Plan:
 {json.dumps(plan, indent=2, default=str)}
 
-As Chairman, carefully review this plan for safety and correctness. Consider:
-- Could any step cause irreversible or destructive harm (data loss, system damage, security risk)?
-- Does the plan actually accomplish the task the user asked for?
-- Are there missing safeguards or confirmations that should be in place first?
+Review this plan for safety and correctness:
+- REJECT only if a step is destructive or irreversible (deleting/formatting data, shutdown, registry edits, sending messages to real recipients without confirmation) or if the plan clearly does NOT accomplish the stated task.
+- APPROVE routine operations: creating/editing files the user asked for, opening apps, searches, navigation, reading status.
+- Do NOT reject a plan merely because it lacks extra safeguards - if the actions themselves are safe and match the task, approve it.
 
 Respond ONLY with JSON:
 {{
