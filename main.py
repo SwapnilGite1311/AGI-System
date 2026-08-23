@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import re
+import struct
 import sys
 import tempfile
 import wave
@@ -225,8 +226,27 @@ class AutonomousSystemController:
                 "error": str(exc),
             }
 
-    def _record_audio(self, duration: int = 5, rate: int = 16000, channels: int = 1) -> Optional[str]:
-        """Record microphone audio to a temporary WAV file."""
+    @staticmethod
+    def _rms_energy(pcm_data: bytes) -> float:
+        """Root-mean-square energy of 16-bit little-endian PCM frames."""
+        count = len(pcm_data) // 2
+        if not count:
+            return 0.0
+        samples = struct.unpack(f"<{count}h", pcm_data[: count * 2])
+        return (sum(s * s for s in samples) / count) ** 0.5
+
+    def _record_audio(
+        self,
+        duration: int = 10,
+        rate: int = 16000,
+        channels: int = 1,
+        silence_ms: int = 1200,
+    ) -> Optional[str]:
+        """Record microphone audio to a temporary WAV file with basic VAD.
+
+        Calibrates ambient noise for ~320ms, records until speech is detected
+        and then ~`silence_ms` of silence passes, or until `duration` seconds.
+        """
         try:
             pa = pyaudio.PyAudio()
             stream = pa.open(
@@ -236,12 +256,38 @@ class AutonomousSystemController:
                 input=True,
                 frames_per_buffer=1024,
             )
-            print(f"Recording voice for {duration} seconds...")
+            print("Listening (speak, then pause)...")
             frames = []
             try:
-                for _ in range(int(rate / 1024 * duration)):
+                frame_ms = 1000.0 * 1024 / rate  # ~64ms per 1024-sample frame
+                silence_frame_limit = max(1, int(silence_ms / frame_ms))
+                calibration_frames = 5  # ~320ms noise-floor estimate
+
+                noise_floor = 0.0
+                for _ in range(calibration_frames):
+                    noise_floor = max(noise_floor, self._rms_energy(stream.read(1024, exception_on_overflow=False)))
+
+                threshold = max(noise_floor * 2.5, 300.0)
+                speech_detected = False
+                silent_frames_after_speech = 0
+                min_frames_before_stop = int(1000 / frame_ms)  # record at least ~1s total
+
+                total_frames = int(rate / 1024 * duration)
+                for index in range(total_frames):
                     data = stream.read(1024, exception_on_overflow=False)
                     frames.append(data)
+
+                    if self._rms_energy(data) > threshold:
+                        speech_detected = True
+                        silent_frames_after_speech = 0
+                    elif speech_detected and index >= min_frames_before_stop:
+                        silent_frames_after_speech += 1
+                        if silent_frames_after_speech >= silence_frame_limit:
+                            logger.info(
+                                "Voice: end of speech detected after {:.1f}s",
+                                len(frames) * frame_ms / 1000.0,
+                            )
+                            break
             finally:
                 stream.stop_stream()
                 stream.close()
