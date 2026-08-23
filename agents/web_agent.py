@@ -369,6 +369,45 @@ class WebAgent:
 
         return {"found": False, "error": "No selector or description provided"}
 
+    async def verify_dom_submission(self) -> Dict[str, Any]:
+        """Verify a form submission by inspecting the live page text via the
+        browser driver. Returns an honest verdict: verified / rejected /
+        unverified (when the page cannot be read)."""
+        try:
+            page = self.browser_driver.page
+            content_html = await page.content()
+        except Exception as exc:
+            return {
+                "verified": False,
+                "verdict": "unverified",
+                "details": f"Could not read page content after submission: {exc}",
+            }
+
+        text = re.sub(r"<[^>]+>", " ", content_html or "").lower()
+        success_keywords = ["thank you", "success", "submitted", "received", "done", "confirm", "complete"]
+        error_keywords = ["error", "invalid", "required", "failed", "incorrect"]
+
+        has_success = any(kw in text for kw in success_keywords)
+        has_error = any(kw in text for kw in error_keywords)
+
+        if has_success and not has_error:
+            return {
+                "verified": True,
+                "verdict": "verified",
+                "details": "Submission verified via DOM page content (success keywords present).",
+            }
+        if has_error:
+            return {
+                "verified": False,
+                "verdict": "rejected",
+                "details": "Submission verification failed: error indicator keywords found on page.",
+            }
+        return {
+            "verified": False,
+            "verdict": "unknown",
+            "details": "Submission performed; no clear success or error indicators found on page.",
+        }
+
     def click_element(self, x: int, y: int) -> Dict[str, Any]:
         """Click a specific screen location."""
 
@@ -627,6 +666,13 @@ class WebAgent:
                                 submitted = True
                             except Exception:
                                 pass
+                        submission_verified = False
+                        verification_details = "Not submitted or verification skipped"
+                        if submitted:
+                            await asyncio.sleep(1.0)
+                            dom_check = await self.verify_dom_submission()
+                            submission_verified = dom_check["verified"]
+                            verification_details = dom_check["details"]
                         # record direct selections
                         for ef in executed_fields:
                             selection_log.append({"field": ef.get("name"), "method": "direct", "selector": ef.get("selector"), "confidence": ef.get("confidence")})
@@ -645,8 +691,8 @@ class WebAgent:
                             "missing_fields": sorted(expected_fields - mapped_fields) if not all_fields_mapped else [],
                             "fill_method": "dom_selector",
                             "submitted": submitted,
-                            "submission_verified": False if submitted else False,
-                            "verification_details": "Filled via browser-driver",
+                            "submission_verified": submission_verified,
+                            "verification_details": verification_details,
                             "confidence_level": "high" if all_fields_mapped else "medium",
                         }
             except Exception:
