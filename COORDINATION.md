@@ -1,4 +1,4 @@
-# AGENT COORDINATION BOARD — AGI-SYSTEM PROJECT
+﻿# AGENT COORDINATION BOARD — AGI-SYSTEM PROJECT
 
 Supervisor: Swapnil | Team Lead: OX-ALPHA | Agents: BON, DEV
 Last updated: 2026-08-23 by Team Lead
@@ -62,8 +62,8 @@ Shared no-touch zones: test_fix1_smoke.py belongs to Team Lead.
 | 3 | Delete Code/main.py (diverged duplicate of root main.py). Remove 6 shadowed method definitions in core/autonomy.py (_generate_advanced_plan, _create_business_plan, _create_sequential_plan, _create_goal_oriented_plan, _determine_action_for_part, _determine_agent_for_part — second definition wins, first is dead). Also remove duplicate send_email handlers in main.py keeping ONE. | Team Lead | DONE |
 | 4 | Voice pipeline: recording uses fixed 5s capture with no silence detection (main.py _record_audio ~line 228). Implement basic VAD: stop recording after ~1.2s of sustained silence OR speech end. Must still POST to local-server /listen unchanged. | Team Lead | DONE |
 | 5 | web_agent.py line 648: `False if submitted else False` always False. Make it actually verify submission success where feasible, else set honest value. | Dev | DONE |
-| 6 | business_agent.py line 33 (+sibling loaders): cwd-relative data paths fork saved state depending on launch dir. Resolve against project root like core/memory.py does (lines 27-33 pattern). | Bon | TODO |
-| 7 | settings.json: remove dead config blocks never read by code: memory.redis, memory.chromadb, api host/port block, communication twilio/whatsapp block, audio.wake_word. Grep first to confirm nothing reads them; list grep evidence in your log BEFORE deleting. | Dev | TODO |
+| 6 | business_agent.py path resolution | Bon | IN-PROGRESS (Bon active, started after ack) |
+| 7 | settings.json dead config removal + memory.episodic extension | Dev | DONE (8cdcbed + episodic pending) |
 | 8 | Reconcile Documents/CODEBASE_ISSUES_ANALYSIS.md + SYSTEM_BUG_REPORT.md with reality: mark what is now fixed (model sizing done via commits 2044643+), correct false FIXED claims (Phase 5), note remaining items. Factual doc update, no code changes. | Dev | TODO |
 
 ====================================================================
@@ -109,6 +109,11 @@ All of you have to give your acknowledgement in the group chat situated at the b
 ## Group Chat
 =====================================================================
 (entire group writes here)
+- 2026-08-23 - Team Lead: ACK received. Supervisor channel + this group chat = highest priority, checked before/after every task. Problems will be reported here. (Earlier ack went to TEAM LEAD LOG before this section existed - logging here from now on.)
+- 2026-08-23 - Team Lead: ANSWER to Bon's question: learning/* including neural_command_model.py remains YOURS. Context: I reassigned task #2 at ~13:05 because the board showed zero Bon activity for ~1.5h and supervisor wanted speed. Your commit a0135b2 landed after mine - we worked in parallel without colliding destructively, but that was luck, not process. RULE AMENDMENT (binding all agents): post a one-line "STARTED task X" entry in your LOG BEFORE touching any code, so silent work never happens again.
+- 2026-08-23 - Team Lead: VERIFIED merged state after our parallel work: both fix-sets coexist correctly (Bon's nn-gating/intent-guard/centroid-fix + my null-result hardening). py_compile passes; real-data fit OK (429 exps, 3 clusters); hostile-null-data fit OK. Task #2 confirmed DONE by joint effort.
+- 2026-08-23 - Team Lead: DECISION on Dev's flag: memory.episodic block confirmed dead (core/memory.py hardcodes episodic_memory.db path, never reads config). APPROVED for removal - extend task #7 scope, Dev please remove it with the same grep-evidence discipline.
+- 2026-08-23 - Team Lead: PROCESS FIX adopted from Dev's problem report: rule 5 amended - use explicit-path `git add <files>` instead of `git add -A` so nobody sweeps another agent's WIP into their commit.
 - 2026-08-23 - Dev: ACK received new rules (supervisor channel = highest priority, short append-only logs). Status: task #5 DONE (commit 9a81502), task #7 DONE (commit 8cdcbed), starting task #8 next.
 - 2026-08-23 - Dev: PROBLEM REPORT to Team Lead/Bon: commit 8cdcbed accidentally included Bon's uncommitted edits to learning/neural_command_model.py because rule-mandated `git add -A` swept the shared working tree. I did not author those changes. Bon please log them under your name; I will use explicit-path adds from now on.
 - 2026-08-23 - Dev: NOTE for Team Lead: memory.episodic config block also appears unread by code (core/memory.py hardcodes its db path) — left in place as it was outside task #7's listed scope. Flagging for decision.
