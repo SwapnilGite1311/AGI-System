@@ -2297,7 +2297,7 @@ class AutonomousSystemController:
             step_result = {"success": True, **system_info}
 
         elif intent_type == "network_info":
-            step_result = self.agents["system"].get_network_info()
+            step_result = {"success": True, **self.agents["system"].get_network_info()}
 
         elif intent_type == "disk_drives":
             step_result = {
