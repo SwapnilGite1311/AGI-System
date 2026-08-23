@@ -68,6 +68,20 @@ ASC uses a sophisticated multi-agent architecture where each agent specializes i
 - **AutonomyEngine**: LLM-optional autonomous planning
 - **ToolRegistry**: Available tool management and discovery
 
+### Session Memory Continuity (audited 2026-08-23 — honest capabilities)
+
+What works today:
+- **Within one running session**, ASC remembers: the last command and strategy (`last_command`, `last_strategy` short-term keys), pending items awaiting confirmation tokens (dangerous-command confirmations, form submissions, clarifications), and the last ~8 conversation turns. Conversation replies reference earlier chat turns correctly (verified live).
+- Recent context is fed into autonomous planning via `_build_autonomy_context()` → `recent_context`, so plans can be influenced by what you just did.
+- Session activity logs persist to `data/sessions.json`.
+
+Honest limitations:
+- **Short-term memory is in-RAM only.** Restarting `python main.py` forgets everything conversational; only long-term preferences and learning data survive restarts.
+- Short-term memory TTL is stored but **not enforced** — entries expire only when the 100-entry ring buffer wraps.
+- Non-conversation commands do not inject conversation history into their execution; continuity across command *types* is limited to planning context, not reply content.
+- The conversation history lives inside the ConversationAgent instance, not persisted per-session on disk.
+
+
 ### Learning Pipeline
 
 - **Phase 4**: Semi-supervised learning from user feedback
