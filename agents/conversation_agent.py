@@ -5,6 +5,7 @@ This keeps ordinary conversation separate from tool execution, while still
 allowing local models to answer when Ollama is available.
 """
 
+import asyncio
 import json
 import re
 from typing import Any, Dict, List, Optional
@@ -21,6 +22,9 @@ class ConversationAgent:
             self.config = json.load(file)
 
         self.ollama = AsyncClient(host=self.config["ollama"]["host"])
+        ollama_config = self.config.get("ollama", {})
+        self.ollama_timeout = float(ollama_config.get("timeout", 120))
+        self.keep_alive = str(ollama_config.get("keep_alive", "5m"))
         conversation_config = self.config.get("conversation", {})
         council_config = self.config.get("llm_council", {})
         self.model = conversation_config.get(
@@ -81,10 +85,14 @@ class ConversationAgent:
 
         try:
             prompt = self._build_prompt(message, context)
-            response = await self.ollama.generate(
-                model=self.model,
-                prompt=prompt,
-                keep_alive=0,
+            response = await asyncio.wait_for(
+                self.ollama.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    keep_alive=self.keep_alive,
+                    options={"num_ctx": 2048},
+                ),
+                timeout=self.ollama_timeout,
             )
             text = response.get("response", "").strip()
             if not text:

@@ -7,22 +7,22 @@
 
   "llm_council": {
     "chairman": {
-      "model": "qwen2.5:14b",
+      "model": "qwen2.5:3b",
       "role": "final_decision_maker",
       "temperature": 0.1
     },
     "strategist": {
-      "model": "qwen2.5:7b",
+      "model": "qwen2.5:3b",
       "role": "planning",
       "temperature": 0.2
     },
     "executor": {
-      "model": "llama3.1:8b",
+      "model": "qwen2.5:3b",
       "role": "execution",
       "temperature": 0.3
     },
     "analyst": {
-      "model": "mistral:7b",
+      "model": "qwen2.5:3b",
       "role": "analysis",
       "temperature": 0.2
     },
@@ -47,8 +47,9 @@
     "host": "http://127.0.0.1:11434",
     "timeout": 120,
     "max_retries": 3,
-    "max_loaded_models": 1,
-    "keep_alive": "0"
+    "max_loaded_models": 2,
+    "keep_alive": "5m",
+    "fallback_chain": ["gemma2:2b", "tinyllama:latest"]
   },
 
   "memory": {

@@ -12,10 +12,11 @@ from loguru import logger
 
 
 MODEL_FALLBACKS = {
-    "qwen2.5:14b": ["qwen2.5:14b", "qwen2.5:7b", "gemma2:2b", "tinyllama:latest"],
-    "qwen2.5:7b": ["qwen2.5:7b", "gemma2:2b", "tinyllama:latest"],
-    "llama3.1:8b": ["llama3.1:8b", "gemma2:2b", "tinyllama:latest"],
-    "mistral:7b": ["mistral:7b", "gemma2:2b", "tinyllama:latest"],
+    "qwen2.5:14b": ["qwen2.5:14b", "qwen2.5:3b", "gemma2:2b", "tinyllama:latest"],
+    "qwen2.5:7b": ["qwen2.5:7b", "qwen2.5:3b", "gemma2:2b", "tinyllama:latest"],
+    "qwen2.5:3b": ["qwen2.5:3b", "gemma2:2b", "tinyllama:latest"],
+    "llama3.1:8b": ["llama3.1:8b", "qwen2.5:3b", "gemma2:2b", "tinyllama:latest"],
+    "mistral:7b": ["mistral:7b", "qwen2.5:3b", "gemma2:2b", "tinyllama:latest"],
     "llava:7b": ["llava:7b", "gemma2:2b", "tinyllama:latest"],
     "gemma2:2b": ["gemma2:2b", "tinyllama:latest"],
     "tinyllama": ["tinyllama:latest"],
@@ -35,7 +36,11 @@ class LLMCouncil:
         with open(config_path, 'r') as f:
             self.config = json.load(f)
         
-        self.ollama = AsyncClient(host=self.config['ollama']['host'])
+        ollama_config = self.config.get('ollama', {})
+        self.ollama = AsyncClient(host=ollama_config.get('host', 'http://127.0.0.1:11434'))
+        self.ollama_timeout = float(ollama_config.get('timeout', 120))
+        self.keep_alive = str(ollama_config.get('keep_alive', '5m'))
+        self.fallback_chain = list(ollama_config.get('fallback_chain', ['gemma2:2b', 'tinyllama:latest']))
         self.council_config = self.config['llm_council']
         self.memory_limit_gb = self._detect_memory_limit_gb()
         
@@ -87,30 +92,19 @@ class LLMCouncil:
         return self._get_available_memory_gb()
 
     def _select_model_for_member(self, member: str) -> str:
-        """Choose a model that fits the current memory budget."""
+        """Return the member's configured model.
+
+        All configured primaries are small enough to load fully into GPU VRAM,
+        so no speculative downgrading based on system RAM. Real load failures
+        are handled by the fallback chain in _generate_with_fallbacks.
+        """
         council_cfg = getattr(self, "council_config", None)
         if council_cfg is None:
             council_cfg = getattr(self, "config", {}).get("llm_council", {})
 
         member_data = council_cfg.get(member, {})
         raw_model = member_data.get('model', 'gemma2:2b') if isinstance(member_data, dict) else 'gemma2:2b'
-        preferred_model = self._normalize_model_name(raw_model)
-        available_gb = self._get_available_memory_gb()
-
-        if member == "backup":
-            return raw_model or "tinyllama"
-
-        if available_gb <= 4.0:
-            return 'tinyllama'
-
-        if available_gb <= 6.0 and preferred_model in {'qwen2.5:14b', 'qwen2.5:7b', 'llama3.1:8b', 'mistral:7b', 'llava:7b'}:
-            return 'gemma2:2b'
-
-        if available_gb <= 8.0:
-            if preferred_model in {'qwen2.5:14b', 'qwen2.5:7b', 'llama3.1:8b', 'mistral:7b', 'llava:7b'}:
-                return 'gemma2:2b'
-
-        return preferred_model
+        return self._normalize_model_name(raw_model)
 
     def _model_candidates(self, member: str) -> List[str]:
         """Return a safe fallback chain for a council member."""
@@ -331,24 +325,35 @@ ONLY JSON:"""
             return {"error": str(e), "method": "chairman_failed"}
     
     async def _generate_with_fallbacks(self, member: str, prompt: str, options: Dict[str, Any] = None, images: List[bytes] = None) -> tuple[Dict[str, Any], str]:
-        """Try a preferred model first, then fall back to smaller models if it fails."""
+        """Try the preferred model first, then walk down the fallback chain on ANY failure."""
+        preferred = self._select_model_for_member(member)
+        candidates = [preferred]
+        for model in self.fallback_chain + MODEL_FALLBACKS.get(preferred, []):
+            if model not in candidates:
+                candidates.append(model)
+
         last_error = None
-        for model in self._model_candidates(member):
+        for model in candidates:
             try:
-                default_options = {"num_ctx": 1024}
+                default_options = {"num_ctx": 2048}
                 if options:
                     default_options.update(options)
-                payload = {"model": model, "prompt": prompt, "keep_alive": 0, "options": default_options}
+                payload = {
+                    "model": model,
+                    "prompt": prompt,
+                    "keep_alive": self.keep_alive,
+                    "options": default_options,
+                }
                 if images:
                     payload["images"] = images
-                response = await self.ollama.generate(**payload)
+                response = await asyncio.wait_for(
+                    self.ollama.generate(**payload),
+                    timeout=self.ollama_timeout,
+                )
                 return response, model
             except Exception as exc:
                 last_error = exc
-                logger.warning("Model {} failed for {}: {}", model, member, str(exc))
-                if 'not found' in str(exc).lower() or 'out of memory' in str(exc).lower() or 'cuda' in str(exc).lower() or 'memory' in str(exc).lower():
-                    continue
-                raise
+                logger.warning("Model {} failed for {}: {} - falling back", model, member, str(exc))
         if last_error:
             raise last_error
         raise RuntimeError("No model available")

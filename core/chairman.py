@@ -3,6 +3,7 @@ Chairman AI - The ultimate decision maker
 Makes final calls when council members disagree or for critical tasks
 """
 
+import asyncio
 import json
 from typing import Dict, Any, List
 from ollama import AsyncClient
@@ -23,7 +24,10 @@ class Chairman:
         with open(config_path, 'r') as f:
             self.config = json.load(f)
         
-        self.ollama = AsyncClient(host=self.config['ollama']['host'])
+        ollama_config = self.config.get('ollama', {})
+        self.ollama = AsyncClient(host=ollama_config.get('host', 'http://127.0.0.1:11434'))
+        self.ollama_timeout = float(ollama_config.get('timeout', 120))
+        self.keep_alive = str(ollama_config.get('keep_alive', '5m'))
         self.model = self.config['llm_council']['chairman']['model']
         self.temperature = self.config['llm_council']['chairman']['temperature']
         
@@ -52,15 +56,18 @@ class Chairman:
         prompt = self._build_decision_prompt(task, council_opinions, context)
         
         try:
-            response = await self.ollama.generate(
-                model=self.model,
-                prompt=prompt,
-                options={
-                    "temperature": self.temperature,
-                    "num_predict": 2000,
-                    "num_ctx": 2048
-                },
-                keep_alive=0
+            response = await asyncio.wait_for(
+                self.ollama.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    options={
+                        "temperature": self.temperature,
+                        "num_predict": 2000,
+                        "num_ctx": 2048
+                    },
+                    keep_alive=self.keep_alive
+                ),
+                timeout=self.ollama_timeout,
             )
             
             decision = self._parse_response(response['response'])
@@ -121,15 +128,18 @@ Provide resolution in JSON:
 Respond ONLY with JSON."""
 
         try:
-            response = await self.ollama.generate(
-                model=self.model,
-                prompt=prompt,
-                options={
-                    "temperature": self.temperature,
-                    "num_predict": 2000,
-                    "num_ctx": 2048
-                },
-                keep_alive=0
+            response = await asyncio.wait_for(
+                self.ollama.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    options={
+                        "temperature": self.temperature,
+                        "num_predict": 2000,
+                        "num_ctx": 2048
+                    },
+                    keep_alive=self.keep_alive
+                ),
+                timeout=self.ollama_timeout,
             )
 
             resolution = self._parse_response(response['response'])
@@ -181,15 +191,18 @@ Respond ONLY with JSON:
 }}"""
 
         try:
-            response = await self.ollama.generate(
-                model=self.model,
-                prompt=prompt,
-                options={
-                    "temperature": self.temperature,
-                    "num_predict": 1500,
-                    "num_ctx": 2048
-                },
-                keep_alive=0
+            response = await asyncio.wait_for(
+                self.ollama.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    options={
+                        "temperature": self.temperature,
+                        "num_predict": 1500,
+                        "num_ctx": 2048
+                    },
+                    keep_alive=self.keep_alive
+                ),
+                timeout=self.ollama_timeout,
             )
 
             validation = self._parse_response(response['response'])
