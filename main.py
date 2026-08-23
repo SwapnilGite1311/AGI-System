@@ -12,6 +12,7 @@ import struct
 import sys
 import tempfile
 import wave
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
@@ -530,6 +531,7 @@ class AutonomousSystemController:
             self._cache_command_strategy(command, strategy, result)
             self._record_learning(command, strategy, result)
             self._learn_from_execution(command, plan or strategy, result)
+            self._journal(command, strategy, result)
             return result
 
         except Exception as exc:
@@ -542,7 +544,53 @@ class AutonomousSystemController:
                 "recovery_suggestion": self._generate_recovery_suggestion(command, exc),
             }
             self._record_learning(command, strategy, result)
+            self._journal(command, strategy, result)
             return result
+
+    def _journal(self, command: str, strategy: Dict[str, Any], result: Dict[str, Any]):
+        """Append a human-readable record of one executed command to
+        data/execution_journal.json so the supervisor can review activity
+        without reading raw logs. Journaling must never break execution."""
+
+        try:
+            journal_path = Path(__file__).resolve().parent / "data" / "execution_journal.json"
+            entries = []
+            if journal_path.exists():
+                try:
+                    entries = json.loads(journal_path.read_text(encoding="utf-8"))
+                    if not isinstance(entries, list):
+                        entries = []
+                except Exception:
+                    entries = []
+
+            raw_steps = result.get("results") or result.get("steps") or []
+            step_summary = []
+            for step in raw_steps[:10]:
+                if not isinstance(step, dict):
+                    continue
+                intent = step.get("intent") or {}
+                step_summary.append(
+                    {
+                        "action": step.get("action") or (intent.get("type") if isinstance(intent, dict) else None) or "unknown",
+                        "success": bool(step.get("success", True)),
+                        **({"error": str(step.get("error"))} if step.get("error") else {}),
+                    }
+                )
+
+            entry = {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "command": command,
+                "tier": result.get("tier") or strategy.get("tier", "unknown"),
+                "success": bool(result.get("success")),
+                "steps": step_summary,
+            }
+            if result.get("error"):
+                entry["error"] = str(result.get("error"))
+
+            entries.append(entry)
+            journal_path.write_text(json.dumps(entries[-500:], indent=2, default=str), encoding="utf-8")
+        except Exception as exc:
+            logger.debug("Execution journal write skipped: {}", str(exc))
 
     def _generate_recovery_suggestion(self, command: str, error: Exception) -> str:
         """Generate helpful recovery suggestions when commands fail."""
