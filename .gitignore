@@ -19,3 +19,26 @@ Thumbs.db
 # Local secrets / env
 .env
 *.key
+
+# Large external binaries & models (task #12 - repo slimming)
+# Voice pipeline binaries live OUTSIDE this repo at ../local-server/ and must
+# NEVER be tracked: whisper.cpp build + ggml model (~470MB), piper build +
+# onnx voice (~153MB). If local-server is ever moved inside the repo, these
+# rules keep the heavy artifacts out of git history:
+local-server/
+whisper/
+piper/
+*.bin
+*.ggml
+*.onnx
+main.exe
+piper.exe
+
+# Playwright browser binaries (installed via `playwright install`)
+ms-playwright/
+
+# Model weights / checkpoints of any kind
+models/*.pt
+models/*.pth
+models/*.gguf
+models/*.safetensors

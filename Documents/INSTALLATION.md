@@ -1,6 +1,55 @@
+## Required External Binaries & Models
+
+ASC depends on several large binaries and models that are **deliberately NOT tracked in git** (.gitignore blocks `*.bin`, `*.ggml`, `*.onnx`, `local-server/`, `whisper/`, `piper/`, `ms-playwright/`, and model weight files). You must install them yourself.
+
+### 1. Ollama + LLM Models (required for conversation/council)
+
+- Ollama installer: https://ollama.ai/download
+- Current hardware-sized model set (see commit 2044643): council roles use **qwen2.5:3b**, speed role **gemma2:2b**, backup **tinyllama**, vision **llava:7b**. On low-VRAM machines the larger 7b/14b models will fail to load; the fallback chain handles this, but pull at minimum:
+  ```bash
+  ollama pull qwen2.5:3b
+  ollama pull gemma2:2b
+  ollama pull tinyllama
+  ollama pull llava:7b   # only needed for vision features
+  ```
+
+### 2. Playwright Chromium (required for browser automation)
+
+```bash
+playwright install chromium          # default cache location
+# OR set a custom location and point config web_automation.browsers_path at it:
+set PLAYWRIGHT_BROWSERS_PATH=C:\ms-playwright
+playwright install chromium
+```
+Browser binaries are ~300MB+ and are gitignored via `ms-playwright/`.
+
+### 3. Tesseract OCR (optional - vision/form verification)
+
+- Windows installer: https://github.com/UB-Mannheim/tesseract/wiki
+- Install to the default `C:\Program Files\Tesseract-OCR\` — `vision_agent.py` resolves it from config -> PATH -> Program Files fallback. Without it, OCR-dependent features degrade gracefully but do not crash.
+- The `tessdata` language files (`eng.traineddata`) are `.bin`-adjacent data and are gitignored; the installer provides them.
+
+### 4. Voice Server binaries (optional - voice input/output)
+
+Lives OUTSIDE this repo at `<parent>/local-server/` (~620MB total, all gitignored):
+| Component | Path | Size | Source |
+|---|---|---|---|
+| whisper.cpp executable | `local-server/whisper/main.exe` | ~few MB | build from https://github.com/ggml-org/whisper.cpp |
+| Whisper ggml model | `local-server/whisper/ggml-small.bin` | ~466MB | https://huggingface.co/ggerganov/whisper.cpp (ggml-small.bin) |
+| Piper TTS executable | `local-server/piper/piper/piper.exe` | build from https://github.com/rhasspy/piper |
+| Piper voice model | `local-server/piper/en_US-ryan-high.onnx` | ~60MB | https://huggingface.co/rhasspy/piper-voices |
+
+The voice server is started manually with `python local-server/server.py`; ASC checks `http://localhost:5000/health`. Voice features report offline gracefully when these are missing.
+
+### 5. PyAudio / voice capture (optional)
+
+Windows: `pip install pipwin && pipwin install pyaudio`, or use a wheel from https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio if compilation fails.
+
 # Installation Guide
 
 This guide provides detailed installation instructions for ASC (Autonomous System Controller) across different platforms and deployment scenarios.
+
+> **START HERE**: read "Required External Binaries & Models" above first — the repo intentionally ships without large binaries/models.
 
 ## Table of Contents
 
