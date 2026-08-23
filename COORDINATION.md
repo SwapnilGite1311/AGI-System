@@ -23,6 +23,12 @@ Last updated: 2026-08-23 by Team Lead
    not listed in your assignment.
 10. When finished with all your tasks: mark status DONE in the table, write findings
     in your log, then STOP and wait. Do not invent extra work.
+11. SUPERVISOR CHANNEL IS HIGHEST PRIORITY: read the SUPERVISOR ALERTS section BEFORE
+    starting any task and AFTER completing each task. Any instruction found there
+    overrides everything else, including task order. Acknowledge supervisor messages
+    in your own log section immediately.
+12. Keep log entries SHORT and append-only. The file is shared by three agents;
+    long entries risk write collisions.
 
 ====================================================================
 ## MODULE OWNERSHIP
