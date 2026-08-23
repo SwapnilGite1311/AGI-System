@@ -1284,9 +1284,6 @@ class AutonomousSystemController:
         if any(phrase in normalized for phrase in ["configure email", "setup email", "email config"]):
             return {"type": "configure_email"}
 
-        if any(phrase in normalized for phrase in ["send email", "email notification", "notify"]):
-            return {"type": "send_email"}
-
         if any(phrase in normalized for phrase in ["google calendar", "apple calendar", "multi calendar"]):
             return {"type": "calendar_integration"}
 
@@ -1905,14 +1902,6 @@ class AutonomousSystemController:
                 email_address=intent.get("email_address"),
                 password=intent.get("password"),
                 use_tls=intent.get("use_tls", True)
-            )
-
-        elif intent_type == "send_email":
-            step_result = self.agents["business"].send_email_notification(
-                to_email=intent.get("to_email"),
-                subject=intent.get("subject"),
-                body=intent.get("body"),
-                priority=intent.get("priority", "normal")
             )
 
         elif intent_type == "calendar_integration":
@@ -3389,9 +3378,6 @@ class AutonomousSystemController:
             print(f"  Neural model trained: {summary.get('neural_trained', False)}")
             print(f"  Model accuracy: {summary.get('neural_accuracy', 0.0):.2%}")
             print(f"  Confidence level: {summary.get('confidence', 0.0):.2f}")
-
-        elif "url" in step_result:
-            print(f"  Opened: {step_result['url']}")
 
         if step_result.get("warning"):
             print(f"  Note: {step_result['warning']}")
