@@ -227,13 +227,40 @@ class AutonomousSystemController:
             }
 
     @staticmethod
-    def _rms_energy(pcm_data: bytes) -> float:
-        """Root-mean-square energy of 16-bit little-endian PCM frames."""
-        count = len(pcm_data) // 2
-        if not count:
-            return 0.0
-        samples = struct.unpack(f"<{count}h", pcm_data[: count * 2])
-        return (sum(s * s for s in samples) / count) ** 0.5
+    def _pick_input_device(pa: "pyaudio.PyAudio") -> Optional[int]:
+        """Choose a real microphone device, avoiding virtual/loopback inputs.
+
+        Windows machines expose many capture endpoints (noise-cancelling VACs,
+        stereo mix loops); the system default may be silent. Prefer devices
+        whose name looks like a physical microphone.
+        """
+        configured = None
+        try:
+            audio_cfg = json.load(open("config/settings.json", encoding="utf-8")).get("audio", {})
+            configured = audio_cfg.get("input_device_index")
+        except Exception:
+            pass
+        if isinstance(configured, int):
+            return configured
+
+        best_idx: Optional[int] = None
+        best_score = -1
+        for i in range(pa.get_device_count()):
+            info = pa.get_device_info_by_index(i)
+            if info.get("maxInputChannels", 0) <= 0:
+                continue
+            name = (info.get("name") or "").lower()
+            if any(bad in name for bad in ("stereo mix", "virtual", "speaker", "loopback")):
+                continue
+            score = 1
+            if "microphone" in name or "mic array" in name:
+                score += 5
+            if "noise" in name:
+                score -= 2  # ASUS AI noise-cancelling VACs often route silence
+            if score > best_score:
+                best_score = score
+                best_idx = i
+        return best_idx
 
     def _record_audio(
         self,
@@ -249,11 +276,15 @@ class AutonomousSystemController:
         """
         try:
             pa = pyaudio.PyAudio()
+            device_index = self._pick_input_device(pa)
+            if device_index is not None:
+                logger.info("Voice: using input device #{} ({})", device_index, pa.get_device_info_by_index(device_index).get("name"))
             stream = pa.open(
                 format=pyaudio.paInt16,
                 channels=channels,
                 rate=rate,
                 input=True,
+                input_device_index=device_index,
                 frames_per_buffer=1024,
             )
             print("Listening (speak, then pause)...")
