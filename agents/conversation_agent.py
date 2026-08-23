@@ -25,6 +25,10 @@ class ConversationAgent:
         ollama_config = self.config.get("ollama", {})
         self.ollama_timeout = float(ollama_config.get("timeout", 120))
         self.keep_alive = str(ollama_config.get("keep_alive", "5m"))
+        num_gpu = ollama_config.get("num_gpu")
+        self.base_options = {"num_ctx": 2048}
+        if num_gpu is not None:
+            self.base_options["num_gpu"] = int(num_gpu)
         conversation_config = self.config.get("conversation", {})
         council_config = self.config.get("llm_council", {})
         self.model = conversation_config.get(
@@ -90,7 +94,7 @@ class ConversationAgent:
                     model=self.model,
                     prompt=prompt,
                     keep_alive=self.keep_alive,
-                    options={"num_ctx": 2048},
+                    options=dict(self.base_options),
                 ),
                 timeout=self.ollama_timeout,
             )

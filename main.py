@@ -675,6 +675,12 @@ class AutonomousSystemController:
         complexity = self._assess_complexity(command)
         direct_intent = self._parse_direct_command(command)
         autonomy = getattr(self, "autonomy", None)
+
+        # Multi-action commands must decompose BEFORE the single-intent
+        # shortcut can collapse them into one browser action.
+        if self.decompose_complex_tasks and self._contains_explicit_sequence(normalized):
+            return {"tier": "sequential", "complexity": "complex", "source": "decomposer"}
+
         if direct_intent and direct_intent.get("type") in {"browser_action", "fill_form", "confirm_submission"}:
             return {
                 "tier": "direct",
@@ -682,9 +688,6 @@ class AutonomousSystemController:
                 "intent": direct_intent,
                 "source": "rules",
             }
-
-        if self.decompose_complex_tasks and self._contains_explicit_sequence(normalized):
-            return {"tier": "sequential", "complexity": "complex", "source": "decomposer"}
 
         conversation_agent = self.agents.get("conversation")
         if conversation_agent and conversation_agent.is_conversation(command):
@@ -823,6 +826,19 @@ class AutonomousSystemController:
 
         if normalized_command.count(" search ") >= 2 or normalized_command.count(" search for ") >= 2:
             return True
+
+        # Natural-language multi-action: two or more distinct action verbs
+        # joined by "and"/"then" (e.g. "open google and search for amazon").
+        if " and " in normalized_command or " then " in normalized_command:
+            action_verbs = (
+                "open", "launch", "start", "search", "find", "look up", "google",
+                "navigate", "go to", "create", "make", "send", "fill", "list",
+                "show", "run", "copy", "move", "delete", "organize", "download",
+                "check", "play",
+            )
+            found = [v for v in action_verbs if re.search(rf"\b{v}\b", normalized_command)]
+            if len(found) >= 2:
+                return True
 
         return False
 
@@ -3047,47 +3063,30 @@ class AutonomousSystemController:
         return {"success": False, "error": "Unknown web action"}
 
     async def _execute_general_action(self, context: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Fallback action inference when a plan step is vague."""
+        """Fallback when a plan step matches no registered tool.
+
+        Tries ONE level of direct-command inference; if that fails, reports an
+        honest failure instead of speculatively re-planning (the old recursive
+        council loop caused minute-long hangs and false successes).
+        """
 
         description = params.get("description", context)
         inferred_intent = self._parse_direct_command(description) or self._parse_direct_command(context)
         if inferred_intent:
             return (await self._execute_directly(description, {"intent": inferred_intent}))["results"][0]
 
-        try:
-            plan = await self.council.decide(description, "medium")
-            if not isinstance(plan, dict):
-                raise ValueError("Council did not return a plan")
-            normalized_plan = self._normalize_action_plan({"action_plan": plan.get("action_plan") or plan.get("steps")}, description)
-            if normalized_plan:
-                execution = await self._execute_plan({"action_plan": normalized_plan}, description)
-                if execution.get("success"):
-                    return {
-                        "success": True,
-                        "action": "council_planned",
-                        "description": description,
-                        "plan": normalized_plan,
-                        "results": execution.get("results", []),
-                    }
-                return {
-                    "success": False,
-                    "action": "council_planned",
-                    "error": execution.get("error") or "Council plan failed to execute.",
-                    "description": description,
-                    "plan": normalized_plan,
-                }
-        except Exception as exc:
-            logger.warning("Council fallback for vague action failed: {}", exc)
-
         return {
             "success": False,
-            "action": "unsupported",
+            "action": params.get("action", "unknown"),
             "error": (
-                "I could not map this step to a real agent action yet. "
-                "Try phrasing it as open/search/navigate/fill form/list/create/run/organize."
+                f"No executable action matched for: {str(description)[:140]}. "
+                "The generated plan was too vague to execute safely. "
+                "Try a more specific command."
             ),
-            "description": description,
         }
+
+    def _execute_file_action(self, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute file-related actions."""
 
     def _cache_command_strategy(self, command: str, strategy: Dict[str, Any], result: Dict[str, Any]):
         """Cache successful routing decisions."""
@@ -3332,8 +3331,9 @@ class AutonomousSystemController:
                 break
 
             except Exception as exc:
-                logger.error("Error in interactive mode: {}", str(exc))
-                print(f"\nI encountered an issue: {str(exc)}")
+                detail = str(exc) or exc.__class__.__name__
+                logger.error("Error in interactive mode ({}): {}", exc.__class__.__name__, detail)
+                print(f"\nI encountered an issue ({exc.__class__.__name__}): {detail}")
                 print("Let me try to help you with something else.\n")
 
     def _display_capabilities(self):

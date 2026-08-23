@@ -28,6 +28,10 @@ class Chairman:
         self.ollama = AsyncClient(host=ollama_config.get('host', 'http://127.0.0.1:11434'))
         self.ollama_timeout = float(ollama_config.get('timeout', 120))
         self.keep_alive = str(ollama_config.get('keep_alive', '5m'))
+        num_gpu = ollama_config.get('num_gpu')
+        self.base_options = {"num_ctx": 2048}
+        if num_gpu is not None:
+            self.base_options["num_gpu"] = int(num_gpu)
         self.model = self.config['llm_council']['chairman']['model']
         self.temperature = self.config['llm_council']['chairman']['temperature']
         
@@ -61,9 +65,9 @@ class Chairman:
                     model=self.model,
                     prompt=prompt,
                     options={
+                        **self.base_options,
                         "temperature": self.temperature,
                         "num_predict": 2000,
-                        "num_ctx": 2048
                     },
                     keep_alive=self.keep_alive
                 ),
@@ -133,9 +137,9 @@ Respond ONLY with JSON."""
                     model=self.model,
                     prompt=prompt,
                     options={
+                        **self.base_options,
                         "temperature": self.temperature,
                         "num_predict": 2000,
-                        "num_ctx": 2048
                     },
                     keep_alive=self.keep_alive
                 ),
@@ -196,9 +200,9 @@ Respond ONLY with JSON:
                     model=self.model,
                     prompt=prompt,
                     options={
+                        **self.base_options,
                         "temperature": self.temperature,
                         "num_predict": 1500,
-                        "num_ctx": 2048
                     },
                     keep_alive=self.keep_alive
                 ),

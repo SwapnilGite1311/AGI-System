@@ -41,6 +41,12 @@ class LLMCouncil:
         self.ollama_timeout = float(ollama_config.get('timeout', 120))
         self.keep_alive = str(ollama_config.get('keep_alive', '5m'))
         self.fallback_chain = list(ollama_config.get('fallback_chain', ['gemma2:2b', 'tinyllama:latest']))
+        # num_gpu: 0 forces CPU inference - immune to desktop VRAM pressure.
+        # Remove or raise on machines with dedicated free GPU memory.
+        num_gpu = ollama_config.get('num_gpu')
+        self.base_options = {"num_ctx": 2048}
+        if num_gpu is not None:
+            self.base_options["num_gpu"] = int(num_gpu)
         self.council_config = self.config['llm_council']
         self.memory_limit_gb = self._detect_memory_limit_gb()
         
@@ -335,7 +341,7 @@ ONLY JSON:"""
         last_error = None
         for model in candidates:
             try:
-                default_options = {"num_ctx": 2048}
+                default_options = dict(self.base_options)
                 if options:
                     default_options.update(options)
                 payload = {

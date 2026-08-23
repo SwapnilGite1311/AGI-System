@@ -49,7 +49,8 @@
     "max_retries": 3,
     "max_loaded_models": 1,
     "keep_alive": "5m",
-    "fallback_chain": ["gemma2:2b", "tinyllama:latest"]
+    "fallback_chain": ["gemma2:2b", "tinyllama:latest"],
+    "num_gpu": 0
   },
 
   "vision": {
