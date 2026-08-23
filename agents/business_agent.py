@@ -26,18 +26,26 @@ class BusinessAgent:
 
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize the business agent."""
-        
+
+        # Resolve data files against the project root so saved state does not
+        # fork depending on the directory ASC was launched from.
+        self.project_root = Path(config_path).resolve().parent.parent
+
         with open(config_path, "r", encoding="utf-8") as file:
             self.config = json.load(file)
 
-        self.data_path = Path("data/business_tasks.json")
+        self.data_path = self._data_file("business_tasks.json")
         self.data_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         self.tasks = self._load_tasks()
         self.projects = self._load_projects()
         self.schedules = self._load_schedules()
-        
+
         logger.info("Business Agent initialized")
+
+    def _data_file(self, filename: str) -> Path:
+        """Resolve a file inside <project_root>/data/ regardless of cwd."""
+        return self.project_root / "data" / filename
 
     def _load_tasks(self) -> List[Dict[str, Any]]:
         """Load business tasks from storage."""
@@ -52,7 +60,7 @@ class BusinessAgent:
 
     def _load_projects(self) -> List[Dict[str, Any]]:
         """Load projects from storage."""
-        projects_path = Path("data/projects.json")
+        projects_path = self._data_file("projects.json")
         if projects_path.exists():
             try:
                 with open(projects_path, "r", encoding="utf-8") as f:
@@ -63,7 +71,7 @@ class BusinessAgent:
 
     def _load_schedules(self) -> List[Dict[str, Any]]:
         """Load schedules from storage."""
-        schedules_path = Path("data/schedules.json")
+        schedules_path = self._data_file("schedules.json")
         if schedules_path.exists():
             try:
                 with open(schedules_path, "r", encoding="utf-8") as f:
@@ -87,7 +95,7 @@ class BusinessAgent:
     def _save_projects(self):
         """Save projects to storage."""
         try:
-            projects_path = Path("data/projects.json")
+            projects_path = self._data_file("projects.json")
             with open(projects_path, "w", encoding="utf-8") as f:
                 json.dump(self.projects, f, indent=2)
         except Exception as e:
@@ -96,7 +104,7 @@ class BusinessAgent:
     def _save_schedules(self):
         """Save schedules to storage."""
         try:
-            schedules_path = Path("data/schedules.json")
+            schedules_path = self._data_file("schedules.json")
             with open(schedules_path, "w", encoding="utf-8") as f:
                 json.dump(self.schedules, f, indent=2)
         except Exception as e:
@@ -1154,7 +1162,7 @@ ASC"""
         }
         
         # Store in a separate communication log file
-        comm_log_path = Path("data/communication_log.json")
+        comm_log_path = self._data_file("communication_log.json")
         comm_log_path.parent.mkdir(parents=True, exist_ok=True)
         
         try:
@@ -2300,7 +2308,7 @@ ASC"""
     ) -> Dict[str, Any]:
         """Add a team member to the system."""
         
-        team_path = Path("data/team_members.json")
+        team_path = self._data_file("team_members.json")
         team_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Load existing team members
@@ -2356,7 +2364,7 @@ ASC"""
     def list_team_members(self, role: Optional[str] = None) -> Dict[str, Any]:
         """List team members with optional role filtering."""
         
-        team_path = Path("data/team_members.json")
+        team_path = self._data_file("team_members.json")
         
         try:
             if team_path.exists():
@@ -2386,7 +2394,7 @@ ASC"""
         """Assign a team member to a project."""
         
         # Load team members
-        team_path = Path("data/team_members.json")
+        team_path = self._data_file("team_members.json")
         try:
             if team_path.exists():
                 with open(team_path, "r", encoding="utf-8") as f:
@@ -2473,7 +2481,7 @@ ASC"""
     ) -> Dict[str, Any]:
         """Create a notification for a team member."""
         
-        notifications_path = Path("data/team_notifications.json")
+        notifications_path = self._data_file("team_notifications.json")
         notifications_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Load existing notifications
@@ -2524,7 +2532,7 @@ ASC"""
     ) -> Dict[str, Any]:
         """Get notifications for a team member."""
         
-        notifications_path = Path("data/team_notifications.json")
+        notifications_path = self._data_file("team_notifications.json")
         
         try:
             if notifications_path.exists():
@@ -2560,7 +2568,7 @@ ASC"""
     ) -> Dict[str, Any]:
         """Mark a notification as read."""
         
-        notifications_path = Path("data/team_notifications.json")
+        notifications_path = self._data_file("team_notifications.json")
         
         try:
             if notifications_path.exists():
@@ -2604,7 +2612,7 @@ ASC"""
     ) -> Dict[str, Any]:
         """Create a shared workspace for team collaboration."""
         
-        workspaces_path = Path("data/shared_workspaces.json")
+        workspaces_path = self._data_file("shared_workspaces.json")
         workspaces_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Load existing workspaces
@@ -2651,7 +2659,7 @@ ASC"""
     def list_shared_workspaces(self, team_member_id: Optional[str] = None) -> Dict[str, Any]:
         """List shared workspaces, optionally filtered by team member."""
         
-        workspaces_path = Path("data/shared_workspaces.json")
+        workspaces_path = self._data_file("shared_workspaces.json")
         
         try:
             if workspaces_path.exists():
