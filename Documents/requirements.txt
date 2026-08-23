@@ -1,0 +1,39 @@
+# Core AI/ML
+ollama
+torch
+torchvision
+transformers
+
+# Computer Vision
+opencv-python
+pillow
+pytesseract
+ultralytics
+
+# System Control
+pyautogui
+pywinauto
+psutil
+keyboard
+mouse
+
+# Data & Storage
+numpy
+pandas
+chromadb
+sqlalchemy
+
+# Web Interface
+fastapi
+uvicorn
+websockets
+flask
+flask-cors
+
+# Utilities
+python-dotenv
+loguru
+pyyaml
+pyaudio
+playwright
+requests

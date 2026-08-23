@@ -1,0 +1,182 @@
+{
+  "system": {
+    "name": "Autonomous System Controller",
+    "version": "1.0.0",
+    "mode": "development"
+  },
+
+  "llm_council": {
+    "chairman": {
+      "model": "qwen2.5:14b",
+      "role": "final_decision_maker",
+      "temperature": 0.1
+    },
+    "strategist": {
+      "model": "qwen2.5:7b",
+      "role": "planning",
+      "temperature": 0.2
+    },
+    "executor": {
+      "model": "llama3.1:8b",
+      "role": "execution",
+      "temperature": 0.3
+    },
+    "analyst": {
+      "model": "mistral:7b",
+      "role": "analysis",
+      "temperature": 0.2
+    },
+    "vision": {
+      "model": "llava:7b",
+      "role": "visual_understanding",
+      "temperature": 0.3
+    },
+    "speed": {
+      "model": "gemma2:2b",
+      "role": "quick_responses",
+      "temperature": 0.5
+    },
+    "backup": {
+      "model": "tinyllama",
+      "role": "fallback",
+      "temperature": 0.4
+    }
+  },
+
+  "ollama": {
+    "host": "http://127.0.0.1:11434",
+    "timeout": 120,
+    "max_retries": 3,
+    "max_loaded_models": 1,
+    "keep_alive": "0"
+  },
+
+  "memory": {
+    "short_term": {
+      "type": "redis",
+      "host": "localhost",
+      "port": 6379,
+      "ttl": 3600
+    },
+    "long_term": {
+      "type": "chromadb",
+      "path": "./data/chromadb",
+      "collection": "memories"
+    },
+    "episodic": {
+      "type": "sqlite",
+      "path": "./data/episodes.db"
+    }
+  },
+
+  "vision": {
+    "screenshot_interval": 2,
+    "ocr_enabled": true,
+    "object_detection": true,
+    "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+  },
+
+  "audio": {
+    "wake_word": "hey buddy",
+    "voice_enabled": true,
+    "tts_engine": "pyttsx3",
+    "stt_model": "whisper",
+    "voice_service_url": "http://localhost:5000"
+  },
+
+  "communication": {
+    "phone": {
+      "enabled": false,
+      "provider": "twilio",
+      "account_sid": "",
+      "auth_token": "",
+      "phone_number": ""
+    },
+    "whatsapp": {
+      "enabled": false,
+      "session_path": "./data/whatsapp_session"
+    }
+  },
+
+  "security": {
+    "encryption_enabled": true,
+    "auth_required": false,
+    "audit_logging": true,
+    "privacy_mode": false
+  },
+
+  "api": {
+    "host": "0.0.0.0",
+    "port": 3000,
+    "cors_enabled": true
+  },
+
+  "execution": {
+    "command_cache_size": 100,
+    "direct_pause_seconds": 0.3,
+    "decompose_complex_tasks": true
+  },
+
+  "web_automation": {
+    "default_browser": "chrome",
+    "search_engine_url": "https://www.google.com/search?q={query}",
+    "navigation_delay_seconds": 2.0,
+    "verify_with_ocr": true,
+    "form_field_delay_seconds": 0.1,
+    "form_submit_delay_seconds": 0.2,
+    "driver": "playwright",
+    "driver_browser": "chromium",
+    "browsers_path": "C:\\ms-playwright",
+    "headless": true
+  },
+
+  "learning": {
+    "reinforcement_learning": true,
+    "unsupervised_learning": true,
+    "model_finetuning": false,
+    "training_interval": "daily",
+    "history_limit": 500,
+    "adaptive_min_confidence": 0.82
+  },
+
+  "system_agent": {
+    "command_history_limit": 200,
+    "dangerous_command_action": "confirm",
+    "dangerous_patterns": [
+      "format ", "del /f", "rmdir /s", "rm -rf",
+      "shutdown", "restart", "reg delete",
+      "bcdedit", "diskpart", "cipher /w"
+    ],
+    "command_timeout_seconds": 30
+  },
+
+  "file_agent": {
+    "undo_manifest_dir": "./data/undo_manifests",
+    "max_undo_manifests": 20,
+    "duplicate_hash_algorithm": "md5",
+    "max_files_for_hash": 5000
+  },
+
+  "cybersecurity": {
+    "port_scan_timeout_seconds": 1.0,
+    "common_ports": [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 993, 995, 3306, 3389, 5432, 5900, 8080, 8443, 8888],
+    "ssl_check_timeout_seconds": 5,
+    "max_port_range": 1024
+  },
+
+  "session": {
+    "persist_sessions": true,
+    "session_file": "./data/sessions.json",
+    "preferences_file": "./data/user_preferences.json",
+    "max_sessions": 50,
+    "auto_prune_days": 30
+  },
+
+  "paths": {
+    "data": "./data",
+    "logs": "./logs",
+    "models": "./models",
+    "cache": "./cache",
+    "ollama": "C:\\Users\\Swapnil gite\\AppData\\Local\\Programs\\Ollama\\ollama.exe"
+  }
+}
