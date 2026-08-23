@@ -1399,7 +1399,7 @@ class AutonomousSystemController:
         if any(phrase in normalized for phrase in ["project timeline", "project schedule", "timeline"]):
             return {"type": "project_timeline"}
 
-        if any(phrase in normalized for phrase in ["send email", "email notification", "notify"]):
+        if any(phrase in normalized for phrase in ["send email", "send an email", "email notification", "notify"]):
             return {"type": "send_email"}
 
         if any(phrase in normalized for phrase in ["email template", "generate email", "draft email"]):
@@ -2779,7 +2779,47 @@ class AutonomousSystemController:
             actions=["web", "browser", "navigate", "search", "site_search", "form", "extract_text"],
             handler=lambda action, params, context: self._execute_web_action(action, params),
         ))
+        registry.register(ToolSpec(
+            name="business_ops",
+            agent="business",
+            description="Create/complete tasks, send email notifications, schedule events and reminders.",
+            actions=[
+                "business", "task", "tasks", "create_task", "list_tasks",
+                "complete_task", "send_email", "email", "calendar_event",
+                "schedule_reminder", "schedule", "project", "meeting_agenda",
+            ],
+            handler=lambda action, params, context: self._execute_business_action(action, params),
+        ))
         return registry
+
+    def _execute_business_action(self, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute business-agent actions routed from plans."""
+
+        business = self.agents["business"]
+        context = str(params.get("context") or params.get("description") or "")
+
+        if action_type in ("send_email", "email"):
+            return business.send_email_notification(
+                to_email=params.get("to_email") or params.get("target") or "",
+                subject=params.get("subject") or (params.get("query") or ""),
+                body=params.get("body") or context,
+            )
+        if action_type in ("create_task", "task", "add_task"):
+            title = params.get("title") or params.get("target") or context or "New task"
+            return business.create_task(title=title, description=context)
+        if action_type in ("list_tasks", "tasks"):
+            return business.list_tasks()
+        if action_type in ("complete_task", "update_task_status"):
+            return business.update_task_status(
+                task_id=params.get("task_id"),
+                status=params.get("status", "completed"),
+            )
+        if action_type in ("calendar_event", "schedule_reminder", "schedule"):
+            return business.add_calendar_event(
+                title=params.get("title") or context or "Event",
+                start_time=params.get("start_time"),
+            )
+        return {"success": False, "error": f"Unknown business action: {action_type}"}
 
     def get_tool_manifest(self) -> List[Dict[str, Any]]:
         """Expose available tool metadata for future autonomous planners."""

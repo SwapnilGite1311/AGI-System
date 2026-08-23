@@ -129,7 +129,8 @@ Task: {task}
 
 Respond with an executable action plan in JSON. Use only these action names:
 search, navigate, form, extract_text, open, status, process, run_command,
-list, create_file, create_folder, organize, copy, move, screenshot, ocr.
+list, create_file, create_folder, organize, copy, move, screenshot, ocr,
+create_task, list_tasks, send_email, calendar_event, schedule_reminder.
 
 JSON schema:
 {{
@@ -171,7 +172,8 @@ Task: {task}
 
 Create an executable plan in JSON. Use only these action names:
 search, navigate, form, extract_text, open, status, process, run_command,
-list, create_file, create_folder, organize, copy, move, screenshot, ocr.
+list, create_file, create_folder, organize, copy, move, screenshot, ocr,
+create_task, list_tasks, send_email, calendar_event, schedule_reminder.
 
 Each step must include "action" and "params". Use params like:
 - search: {{"query": "..."}}
@@ -179,6 +181,9 @@ Each step must include "action" and "params". Use params like:
 - form: {{"fields": {{"name": "value"}}, "submit": false}}
 - open: {{"app": "chrome"}}
 - create_file: {{"path": "notes.txt", "content": "..."}}
+- create_task: {{"title": "...", "params": {{"description": "..."}}}}
+- send_email: {{"to_email": "a@b.com", "subject": "...", "body": "..."}}
+- calendar_event: {{"title": "...", "start_time": "..."}}
 - run_command: {{"command": "Get-Date", "shell": "powershell"}}
 
 JSON schema:
@@ -301,7 +306,8 @@ Council Opinions:
 
 Return JSON with an executable action_plan. Use only these action names:
 search, navigate, form, extract_text, open, status, process, run_command,
-list, create_file, create_folder, organize, copy, move, screenshot, ocr.
+list, create_file, create_folder, organize, copy, move, screenshot, ocr,
+create_task, list_tasks, send_email, calendar_event, schedule_reminder.
 
 Final decision in JSON:
 {{
