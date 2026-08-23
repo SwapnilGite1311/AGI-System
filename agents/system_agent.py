@@ -394,9 +394,17 @@ class SystemAgent:
 
     def start_voice_server(self, wait: bool = True, timeout: int = 15) -> Dict[str, Any]:
         """Attempt to start the voice server using the local-server path."""
-        voice_server_path = Path("C:/Users/Swapnil gite/LAN/PROJECTS/Agentic Web/local-server/server.py")
+        # local-server is a sibling of AGI-System:
+        #   <root>/AGI-System/agents/system_agent.py -> parents[2] = <root>
+        # Override with VOICE_SERVER_PATH env var when placed elsewhere.
+        voice_server_path = Path(
+            os.environ.get(
+                "VOICE_SERVER_PATH",
+                str(Path(__file__).resolve().parents[2] / "local-server" / "server.py"),
+            )
+        )
         if not voice_server_path.exists():
-            return {"success": False, "error": "Voice server script not found at expected path."}
+            return {"success": False, "error": f"Voice server script not found at {voice_server_path}."}
 
         try:
             import subprocess

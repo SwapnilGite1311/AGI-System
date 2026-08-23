@@ -4,6 +4,7 @@ Vision Agent - computer vision and screen understanding.
 
 import io
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -34,9 +35,14 @@ class VisionAgent:
         if tesseract_path:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
         else:
-            default_windows_path = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-            if default_windows_path.exists():
-                pytesseract.pytesseract.tesseract_cmd = str(default_windows_path)
+            located = shutil.which("tesseract")
+            if located:
+                pytesseract.pytesseract.tesseract_cmd = located
+            else:
+                # Last-resort default Windows install location.
+                default_windows_path = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+                if default_windows_path.exists():
+                    pytesseract.pytesseract.tesseract_cmd = str(default_windows_path)
 
         self.ocr_available = self._check_ocr_availability()
 

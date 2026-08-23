@@ -47,7 +47,7 @@
     "host": "http://127.0.0.1:11434",
     "timeout": 120,
     "max_retries": 3,
-    "max_loaded_models": 2,
+    "max_loaded_models": 1,
     "keep_alive": "5m",
     "fallback_chain": ["gemma2:2b", "tinyllama:latest"]
   },
@@ -56,7 +56,7 @@
     "screenshot_interval": 2,
     "ocr_enabled": true,
     "object_detection": true,
-    "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+    "tesseract_path": ""
   },
 
   "audio": {
@@ -88,7 +88,7 @@
     "form_submit_delay_seconds": 0.2,
     "driver": "playwright",
     "driver_browser": "chromium",
-    "browsers_path": "C:\\ms-playwright",
+    "browsers_path": "",
     "headless": true
   },
 
@@ -139,6 +139,6 @@
     "logs": "./logs",
     "models": "./models",
     "cache": "./cache",
-    "ollama": "C:\\Users\\Swapnil gite\\AppData\\Local\\Programs\\Ollama\\ollama.exe"
+    "ollama": ""
   }
 }
