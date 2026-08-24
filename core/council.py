@@ -224,8 +224,10 @@ ONLY JSON:"""
         """
         
         logger.info("Sequential council (RAM-optimized)...")
-        
-        members_to_consult = ["strategist", "analyst", "executor"]
+        # CPU-budget diet: strategist plans, chairman decides. The analyst and
+        # executor opinions rarely change the outcome for complex (not critical)
+        # tasks but double or triple latency on CPU-only inference.
+        members_to_consult = ["strategist"]
         collected_opinions = {}
         
         # CRITICAL: Consult ONE AT A TIME
