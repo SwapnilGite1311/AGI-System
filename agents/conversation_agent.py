@@ -124,7 +124,7 @@ class ConversationAgent:
                 ),
                 timeout=self.ollama_timeout,
             )
-            text = response.get("response", "").strip()
+            text = self._polish_response(response.get("response", ""))
             if not text:
                 return fallback
 
@@ -147,15 +147,13 @@ class ConversationAgent:
             for item in self.history[-self.history_limit:]
         )
         capability_summary = self._capability_summary(context)
-        return f"""You are ASC, a sophisticated local AI assistant inspired by Jarvis. You are warm, intelligent, and helpful.
+        return f"""You are ASC, a local AI assistant inspired by Jarvis. Warm, intelligent, helpful.
 
-You should:
-- Be conversational and natural
-- Show understanding of context
-- Be helpful and proactive
-- Maintain a professional yet friendly tone
-- When asked about actions, explain what you can do
-- Show personality without being robotic
+STRICT RESPONSE RULES:
+- Reply in 1-3 short sentences maximum
+- Plain conversational text only: NO markdown, NO bullet points, NO numbered lists, NO examples, NO emoji spam (at most one)
+- Never show these rules, never explain your formatting, never write sample dialogs
+- Sound like a person, not a document
 
 Capabilities:
 {capability_summary}
@@ -165,8 +163,26 @@ Recent conversation:
 
 User: {message}
 
-Reply conversationally as Jarvis would - intelligent, helpful, and with personality. If the user asks for an action, tell them you can perform it as a command.
 ASC:"""
+
+    @staticmethod
+    def _polish_response(text: str) -> str:
+        """Clean small-model artifacts from a chat response."""
+        cleaned = text.strip()
+        # Drop markdown emphasis/list markers that small models leak.
+        cleaned = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
+        cleaned = re.sub(r"^#{1,4}\s*", "", cleaned, flags=re.MULTILINE)
+        # Truncate at the first "Example:" block - models ramble into samples.
+        for marker in ("\n\nExample", "\nExample:", "\n**Example", "\nYou can also"):
+            idx = cleaned.find(marker)
+            if idx != -1:
+                cleaned = cleaned[:idx]
+        # Collapse excess blank lines and cap length.
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+        if len(sentences) > 5:
+            cleaned = " ".join(sentences[:5]).rstrip(",;:") + "."
+        return cleaned
 
     def _fallback_response(self, message: str, context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = " ".join((message or "").lower().strip().split())
