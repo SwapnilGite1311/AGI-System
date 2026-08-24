@@ -48,10 +48,36 @@ class ConversationAgent:
         if not normalized:
             return False
 
+        # Capability questions are ALWAYS conversation, even when phrased with
+        # action verbs ("list out the things that you can do").
+        capability_patterns = [
+            r"\bwhat (can|could) you do\b",
+            r"\bwhat you can do\b",
+            r"\bthings that you can do\b",
+            r"\bwhat (are|is) your (capabilities|abilities|features|skills)\b",
+            r"\btell me .*capab",
+            r"\byour capabilities\b",
+        ]
+        if any(re.search(p, normalized) for p in capability_patterns):
+            return True
+
+        # User feedback/complaints about ASC's own behaviour must never be
+        # executed as commands ("you didn't opened chrome at all!").
+        feedback_patterns = [
+            r"^you (didn'?t|did not|don'?t|do not|never)\b",
+            r"\byou (didn'?t|did not) (open|launch|start|do|create|send|search)\b",
+            r"^(that|this|it) ('s |is |was )?(wrong|broken|failed|not working)",
+            r"^(it|that) didn'?t work",
+            r"^wrong\b",
+            r"^try again",
+        ]
+        if any(re.search(p, normalized) for p in feedback_patterns):
+            return True
+
         action_prefixes = (
             "open ", "launch ", "start ", "search ", "google ", "look up ",
             "find ", "go to ", "goto ", "navigate ", "fill ", "create ",
-            "make ", "list ", "show system", "show cpu", "show ram",
+            "make ", "list files", "list tasks", "show system", "show cpu", "show ram",
             "run ", "copy ", "move ", "delete ", "organize ", "backup ",
             "compare ", "download ", "scan ", "check ssl", "dns lookup",
             "analyze disk", "voice ", "check voice",

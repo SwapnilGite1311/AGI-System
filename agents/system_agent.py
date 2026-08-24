@@ -344,6 +344,16 @@ class SystemAgent:
         exe = self._resolve_application_executable(app_name)
         if not exe:
             if os.name == "nt":
+                # Refuse implausible launch targets (misrouted sentences like
+                # "you didn't opened chrome at all!") instead of reporting a
+                # fake success when Windows cannot find the file.
+                tokens = app_name.split()
+                if len(tokens) > 3 and not app_name.lower().endswith((".exe", ".lnk")):
+                    return {
+                        "success": False,
+                        "application": app_name,
+                        "error": f"'{app_name}' does not look like an installed application.",
+                    }
                 try:
                     joined_args = " ".join(f'"{arg}"' for arg in (args or []))
                     process = subprocess.Popen(f'start "" "{app_name}" {joined_args}'.strip(), shell=True)

@@ -90,7 +90,7 @@
     "driver": "playwright",
     "driver_browser": "chromium",
     "browsers_path": "",
-    "headless": true
+    "headless": false
   },
 
   "learning": {
