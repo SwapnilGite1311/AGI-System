@@ -1,39 +1,40 @@
-# Core AI/ML
-ollama
-torch
-torchvision
-transformers
+# ============================================================================
+# ASC Core Requirements - packages the code ACTUALLY imports
+# Install: pip install -r requirements.txt
+# ============================================================================
 
-# Computer Vision
-opencv-python
+# LLM inference
+ollama
+
+# Core runtime
+loguru
+requests
+psutil
+
+# Voice capture + playback input
+pyaudio
+
+# Vision / OCR
 pillow
 pytesseract
-ultralytics
 
-# System Control
-pyautogui
-pywinauto
-psutil
-keyboard
-mouse
+# Browser automation
+playwright
 
-# Data & Storage
-numpy
-pandas
-chromadb
-sqlalchemy
-
-# Web Interface
-fastapi
-uvicorn
-websockets
+# Voice server (local-server/)
 flask
 flask-cors
 
-# Utilities
-python-dotenv
-loguru
-pyyaml
-pyaudio
-playwright
-requests
+# Development / testing
+pytest
+
+# ----------------------------------------------------------------------------
+# OPTIONAL - heavy experimental packages NOT currently imported by core code.
+# Install only if you enable those features:
+# torch torchvision transformers   <- neural_command_model gates on torch
+# opencv-python ultralytics        <- future ui_detector work
+# pywinauto                        <- UI automation (see docs/UI_DETECTOR_SCOPING.md)
+# pyautogui keyboard mouse         <- screen-coordinate fallback actions
+# numpy pandas chromadb sqlalchemy <- future vector/DB backends
+# fastapi uvicorn websockets       <- alternative gateway transport
+# python-dotenv pyyaml             <- config conveniences

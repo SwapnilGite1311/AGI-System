@@ -166,5 +166,10 @@
     "smtp_port": 587,
     "email_address": "swapnilgite9028@gmail.com",
     "password": "acpojempbnrwwdrr"
+  },
+  "conversation": {
+    "model": "qwen2.5:3b",
+    "history_limit": 8,
+    "use_local_llm": true
   }
 }
