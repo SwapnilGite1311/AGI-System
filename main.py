@@ -663,6 +663,29 @@ class AutonomousSystemController:
             "tools": self.get_tool_manifest(),
         }
 
+    ACTION_VERBS = (
+        "open", "launch", "start", "search", "find", "look up", "google",
+        "navigate", "go to", "create", "make", "send", "fill", "list",
+        "show", "run", "copy", "move", "delete", "organize", "download",
+        "check", "play", "suggest", "recommend", "close", "read", "analyze",
+        "schedule", "remind", "call", "email", "write", "scan", "backup",
+        "compare", "buy", "order", "book", "clean", "sort", "rename",
+    )
+
+    @classmethod
+    def _looks_actionable(cls, normalized: str) -> bool:
+        """Heuristic: does this look like a real task/command at all?
+
+        Requires at least one known action verb, a digit, or a question mark.
+        Pure gibberish ("flurbick wibble wobble") fails all three and is
+        routed to conversation instead of being planned into junk tasks.
+        """
+        if "?" in normalized:
+            return True
+        if any(ch.isdigit() for ch in normalized):
+            return True
+        return any(re.search(rf"\b{re.escape(v)}\b", normalized) for v in cls.ACTION_VERBS)
+
     def _determine_execution_strategy(self, command: str) -> Dict[str, Any]:
         """Determine which execution tier should handle the command."""
 
@@ -696,6 +719,12 @@ class AutonomousSystemController:
         conversation_agent = self.agents.get("conversation")
         if conversation_agent and conversation_agent.is_conversation(command):
             return {"tier": "conversation", "complexity": "simple", "source": "conversation"}
+
+        # Nonsense gate: commands with no action verbs, no digits, and no
+        # question mark are almost certainly gibberish or chat - never plan
+        # tasks from them ("flurbick wibble wobble" used to become a task).
+        if not self._looks_actionable(normalized):
+            return {"tier": "conversation", "complexity": "simple", "source": "nonsense_gate"}
 
         similar = self.agents["learning"].find_similar_success(command)
         if similar and similar["score"] >= 0.99:
