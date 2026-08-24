@@ -176,10 +176,14 @@ class BusinessAgent:
     def update_task_status(
         self,
         task_id: str,
-        status: str
+        status: str = "completed"
     ) -> Dict[str, Any]:
         """Update task status."""
-        
+
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            return {"success": False, "error": "Task ID is required to update a task."}
+
         for task in self.tasks:
             if task["id"] == task_id:
                 task["status"] = status
@@ -359,14 +363,20 @@ class BusinessAgent:
 
     def add_calendar_event(
         self,
-        title: str,
-        start_time: str,
-        end_time: str,
+        title: str = None,
+        start_time: str = None,
+        end_time: str = None,
         description: str = "",
         location: str = "",
         calendar_type: str = "windows"
     ) -> Dict[str, Any]:
         """Add an event to various calendar platforms."""
+
+        title = str(title or "").strip()
+        if not title:
+            return {"success": False, "error": "Event title is required. Say what the event is about."}
+        if not start_time:
+            return {"success": False, "error": "Start time is required, e.g. 'tomorrow 11am'."}
         
         if calendar_type == "windows":
             return self._add_windows_calendar_event(title, start_time, end_time, description, location)

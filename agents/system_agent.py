@@ -573,6 +573,9 @@ class SystemAgent:
     def run_command(self, command: str, shell: str = "powershell",
                     confirmed: bool = False) -> Dict[str, Any]:
         """Run a system command with safety checks and history tracking."""
+        if not command or not command.strip():
+            return {"success": False, "error": "Empty command - nothing to run."}
+
         logger.info("Running command: {}", command[:80])
 
         # Safety check
@@ -732,6 +735,7 @@ class SystemAgent:
 
         io = psutil.net_io_counters()
         return {
+            "success": True,
             "interfaces": interfaces,
             "active_connections": connections,
             "bytes_sent_mb": round(io.bytes_sent / (1024**2), 2),
