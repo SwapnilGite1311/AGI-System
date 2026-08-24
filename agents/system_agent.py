@@ -544,6 +544,22 @@ class SystemAgent:
         cmd_lower = command.lower()
         return any(pattern.lower() in cmd_lower for pattern in self.dangerous_patterns)
 
+    def is_network_call(self, command: str) -> bool:
+        """Detect shell commands attempting direct network requests.
+
+        LLM planners occasionally hallucinate external API endpoints and try
+        to invoke them via PowerShell/curl. All legitimate network activity
+        must go through the web agent's registered tools instead.
+        """
+        cmd_lower = command.lower()
+        network_patterns = (
+            "invoke-webrequest", "invoke-restmethod", "iwr ", "irm ",
+            "curl ", "wget ", "http://", "https://", "ftp://",
+            "system.net.webclient", "start-process *-http*",
+            "net.webclient", "downloadstring", "uploadfile",
+        )
+        return any(p in cmd_lower for p in network_patterns)
+
     def run_command(self, command: str, shell: str = "powershell",
                     confirmed: bool = False) -> Dict[str, Any]:
         """Run a system command with safety checks and history tracking."""
@@ -558,6 +574,22 @@ class SystemAgent:
                 "command": command,
                 "warning": "This command may be destructive. Please confirm execution.",
                 "matched_patterns": [p for p in self.dangerous_patterns if p.lower() in command.lower()],
+            }
+
+        # Network-call block: shell commands must never touch the network.
+        # Web activity belongs to the web agent's registered tools; LLM
+        # planners sometimes hallucinate API endpoints (e.g. fake email APIs).
+        if self.is_network_call(command):
+            logger.warning("Blocked shell network call: {}", command[:80])
+            return {
+                "success": False,
+                "blocked": True,
+                "command": command,
+                "error": (
+                    "Direct network calls from shell commands are blocked. "
+                    "Use the web agent (navigate/search) or a dedicated "
+                    "configured service instead."
+                ),
             }
 
         try:
