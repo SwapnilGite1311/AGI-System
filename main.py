@@ -1711,12 +1711,12 @@ class AutonomousSystemController:
         power_commands = {
             "shutdown": {
                 "phrases": ["shutdown system", "shut down system", "shutdown laptop", "shut down laptop", "turn off system", "turn off laptop"],
-                "command": "shutdown /s /t 0",
+                "command": "shutdown /s /t 10",
                 "description": "shut down the system",
             },
             "restart": {
                 "phrases": ["restart system", "restart laptop", "reboot system", "reboot laptop"],
-                "command": "shutdown /r /t 0",
+                "command": "shutdown /r /t 10",
                 "description": "restart the system",
             },
             "sleep": {
