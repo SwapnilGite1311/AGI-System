@@ -52,6 +52,71 @@ from core.task_decomposer import TaskDecomposer
 from core.tool_registry import ToolRegistry, ToolSpec
 
 
+class _LazyAgents:
+    """Dict-like agent registry that constructs agents on first access.
+
+    Twelve learning/extras systems are rarely needed in a typical session;
+    building them eagerly cost seconds of boot time and tens of MB of RAM.
+    Frequently used agents (conversation/learning/system) are passed in
+    pre-built; everything else constructs on demand and is cached.
+    """
+
+    def __init__(self, config_path: str, prebuilt: Dict[str, Any]):
+        self._config_path = config_path
+        self._cache: Dict[str, Any] = dict(prebuilt)
+
+    def _build(self, key: str):
+        cfg = self._config_path
+        if key == "vision":
+            return VisionAgent(cfg)
+        if key == "file":
+            return FileAgent(cfg)
+        if key == "business":
+            return BusinessAgent(cfg)
+        if key == "web":
+            return WebAgent(
+                config_path=cfg,
+                system_agent=self["system"],
+                vision_agent=self["vision"],
+                learning_agent=self["learning"],
+            )
+        builders = {
+            "business_process": BusinessProcessAutomation,
+            "security": EnterpriseSecurity,
+            "analytics": AdvancedAnalytics,
+            "advanced_neural": AdvancedNeuralNetwork,
+            "meta_learning": MetaLearningSystem,
+            "self_reflection": SelfReflectionSystem,
+            "autonomous_goals": AutonomousGoalSystem,
+            "concept_discovery": ConceptDiscoverySystem,
+            "self_programming": SelfProgrammingSystem,
+            "algorithm_optimization": AlgorithmOptimizationSystem,
+            "self_evolving": SelfEvolvingArchitecture,
+            "cognitive": AdvancedCognitiveArchitecture,
+        }
+        if key in builders:
+            return builders[key](cfg)
+        raise KeyError(f"Unknown agent: {key}")
+
+    def __getitem__(self, key: str):
+        if key not in self._cache:
+            self._cache[key] = self._build(key)
+            logger.info("Lazy-loaded agent: {}", key)
+        return self._cache[key]
+
+    def get(self, key: str, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __contains__(self, key: str) -> bool:
+        return True
+
+    def keys(self):
+        return list(self._cache.keys())
+
+
 class AutonomousSystemController:
     """Main ASC controller and execution orchestrator."""
 
@@ -86,10 +151,9 @@ class AutonomousSystemController:
         self.autonomy = AutonomyEngine(self.task_decomposer, self.get_tool_manifest)
 
         logger.info("Initializing agents...")
-        learning_agent = LearningAgent(config_path)
         conversation_agent = ConversationAgent(config_path)
         system_agent = SystemAgent(config_path)
-        
+
         # Auto-start Ollama if not already running
         logger.info("Checking Ollama status...")
         if not system_agent.health_check_ollama(timeout=2.0):
@@ -101,50 +165,14 @@ class AutonomousSystemController:
                 logger.warning(f"Ollama auto-start failed: {ollama_start_result.get('error')}")
         else:
             logger.info("Ollama is already running")
-        
-        vision_agent = VisionAgent(config_path)
-        file_agent = FileAgent(config_path)
-        web_agent = WebAgent(
-            config_path=config_path,
-            system_agent=system_agent,
-            vision_agent=vision_agent,
-            learning_agent=learning_agent,
-        )
-        business_agent = BusinessAgent(config_path)
-        business_process_agent = BusinessProcessAutomation(config_path)
-        security_agent = EnterpriseSecurity(config_path)
-        analytics_agent = AdvancedAnalytics(config_path)
-        advanced_neural_agent = AdvancedNeuralNetwork(config_path)
-        meta_learning_agent = MetaLearningSystem(config_path)
-        self_reflection_agent = SelfReflectionSystem(config_path)
-        autonomous_goal_agent = AutonomousGoalSystem(config_path)
-        concept_discovery_agent = ConceptDiscoverySystem(config_path)
-        self_programming_agent = SelfProgrammingSystem(config_path)
-        algorithm_optimization_agent = AlgorithmOptimizationSystem(config_path)
-        self_evolving_agent = SelfEvolvingArchitecture(config_path)
-        cognitive_agent = AdvancedCognitiveArchitecture(config_path)
 
-        self.agents = {
+        learning_agent = LearningAgent(config_path)
+
+        self.agents = _LazyAgents(config_path, {
             "conversation": conversation_agent,
             "learning": learning_agent,
             "system": system_agent,
-            "vision": vision_agent,
-            "file": file_agent,
-            "web": web_agent,
-            "business": business_agent,
-            "business_process": business_process_agent,
-            "security": security_agent,
-            "analytics": analytics_agent,
-            "advanced_neural": advanced_neural_agent,
-            "meta_learning": meta_learning_agent,
-            "self_reflection": self_reflection_agent,
-            "autonomous_goals": autonomous_goal_agent,
-            "concept_discovery": concept_discovery_agent,
-            "self_programming": self_programming_agent,
-            "algorithm_optimization": algorithm_optimization_agent,
-            "self_evolving": self_evolving_agent,
-            "cognitive": cognitive_agent,
-        }
+        })
 
         execution_config = self.config.get("execution", {})
         self.command_cache: Dict[str, Dict[str, Any]] = {}
