@@ -573,9 +573,15 @@ class AutonomousSystemController:
                 if not isinstance(step, dict):
                     continue
                 intent = step.get("intent") or {}
+                label = (
+                    step.get("action")
+                    or (intent.get("type") if isinstance(intent, dict) else None)
+                    or step.get("subtask_description")
+                    or "unknown"
+                )
                 step_summary.append(
                     {
-                        "action": step.get("action") or (intent.get("type") if isinstance(intent, dict) else None) or "unknown",
+                        "action": str(label)[:80],
                         "success": bool(step.get("success", True)),
                         **({"error": str(step.get("error"))} if step.get("error") else {}),
                     }
@@ -3655,6 +3661,12 @@ class AutonomousSystemController:
 
         if step_result.get("message"):
             print(f"  {step_result['message']}")
+
+        if step_result.get("subtask_description") and not any(
+            k in step_result for k in ("processes", "files", "url", "message")
+        ):
+            status = "completed" if step_result.get("success", True) else "failed"
+            print(f"  Step {status}: {step_result['subtask_description']}")
 
         if step_result.get("url"):
             print(f"  Opened: {step_result['url']}")
