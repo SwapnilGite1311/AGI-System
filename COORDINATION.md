@@ -109,40 +109,926 @@ Guys new rules have been added to the coordination board. Please read them caref
 
 All of you have to give your acknowledgement in the group chat situated at the bottom of the file the acknowledgement for if you received your instructions or not and if you are facing any kind of problem you have to report it there and try to keep your messages short in the group chat. If you have any questions regarding the tasks or the rules, please ask in the group chat and I will respond there.
 
+S C:\Users\Swapnil gite\LAN\PROJECTS\Agentic Web> cd AGI-System 
 PS C:\Users\Swapnil gite\LAN\PROJECTS\Agentic Web\AGI-System> python main.py
-16:52:05 | INFO     | ============================================================
-16:52:05 | INFO     | AUTONOMOUS SYSTEM CONTROLLER v1.0
-16:52:05 | INFO     | ============================================================
-16:52:05 | INFO     | Initializing core systems...
-16:52:05 | INFO     | Optimized LLM Council initialized (sequential loading)
-16:52:05 | INFO     | Chairman initialized with model: qwen2.5:3b
-16:52:05 | INFO     | 🧠 Memory system initialized (enhanced)
-16:52:05 | INFO     | Initializing agents...
-16:52:06 | INFO     | Learning Agent initialized
-16:52:06 | INFO     | Conversation Agent initialized
-16:52:06 | INFO     | System Agent initialized (enhanced)
-16:52:06 | INFO     | Checking Ollama status...
-16:52:06 | INFO     | Ollama is already running
-16:52:06 | INFO     | Vision Agent initialized
-16:52:06 | INFO     | 📁 File Agent initialized (enhanced)
-16:52:06 | INFO     | Web Agent initialized
-16:52:06 | INFO     | Business Agent initialized
-16:52:06 | INFO     | Business Process Automation initialized
-16:52:06 | INFO     | Enterprise Security initialized
-16:52:06 | INFO     | Advanced Analytics initialized
-16:52:06 | INFO     | Advanced Neural Network initialized
-16:52:06 | INFO     | Meta-Learning System initialized
-16:52:06 | INFO     | Self-Reflection System initialized
-16:52:06 | INFO     | Autonomous Goal System initialized
-16:52:06 | INFO     | Concept Discovery System initialized
-16:52:06 | INFO     | Self-Programming System initialized
-16:52:06 | INFO     | Algorithm Optimization System initialized
-16:52:06 | INFO     | Self-Evolving Architecture initialized
-16:52:06 | INFO     | Advanced Cognitive Architecture initialized
-16:52:08 | INFO     | Pruned old/excess sessions
-16:52:08 | INFO     | Session started: session_20260823_165208
-16:52:08 | SUCCESS  | All systems initialized
-16:52:08 | INFO     | ============================================================
+19:10:06 | INFO     | ============================================================
+19:10:06 | INFO     | AUTONOMOUS SYSTEM CONTROLLER v1.0
+19:10:06 | INFO     | ============================================================
+19:10:06 | INFO     | Initializing core systems...
+19:10:06 | INFO     | Optimized LLM Council initialized (sequential loading)
+19:10:07 | INFO     | Chairman initialized with model: qwen2.5:3b
+19:10:07 | INFO     | 🧠 Memory system initialized (enhanced)
+19:10:07 | INFO     | Initializing agents...
+19:10:07 | INFO     | Learning Agent initialized
+19:10:07 | INFO     | Conversation Agent initialized
+19:10:07 | INFO     | System Agent initialized (enhanced)
+19:10:07 | INFO     | Checking Ollama status...
+19:10:09 | INFO     | Ollama not running, attempting auto-start...
+time=2026-08-23T19:10:09.905+05:30 level=INFO source=routes.go:1663 msg="server config" env="map[CUDA_VISIBLE_DEVICES: GGML_VK_VISIBLE_DEVICES: GPU_DEVICE_ORDINAL: HIP_VISIBLE_DEVICES: HSA_OVERRIDE_GFX_VERSION: HTTPS_PROXY: HTTP_PROXY: NO_PROXY: OLLAMA_CONTEXT_LENGTH:0 OLLAMA_DEBUG:INFO OLLAMA_EDITOR: OLLAMA_FLASH_ATTENTION:false OLLAMA_GPU_OVERHEAD:0 OLLAMA_HOST:http://127.0.0.1:11434 OLLAMA_KEEP_ALIVE:0s OLLAMA_KV_CACHE_TYPE: OLLAMA_LLM_LIBRARY: OLLAMA_LOAD_TIMEOUT:5m0s OLLAMA_MAX_LOADED_MODELS:1 OLLAMA_MAX_QUEUE:512 OLLAMA_MODELS:C:\\Users\\Swapnil gite\\.ollama\\models OLLAMA_MULTIUSER_CACHE:false OLLAMA_NEW_ENGINE:false OLLAMA_NOHISTORY:false OLLAMA_NOPRUNE:false OLLAMA_NO_CLOUD:false OLLAMA_NUM_PARALLEL:1 OLLAMA_ORIGINS:[http://localhost https://localhost http://localhost:* https://localhost:* http://127.0.0.1 https://127.0.0.1 http://127.0.0.1:* https://127.0.0.1:* http://0.0.0.0 https://0.0.0.0 http://0.0.0.0:* https://0.0.0.0:* app://* file://* tauri://* vscode-webview://* vscode-file://*] OLLAMA_REMOTES:[ollama.com] OLLAMA_SCHED_SPREAD:false OLLAMA_VULKAN:false ROCR_VISIBLE_DEVICES:]"
+time=2026-08-23T19:10:09.907+05:30 level=INFO source=routes.go:1665 msg="Ollama cloud disabled: false"
+time=2026-08-23T19:10:10.080+05:30 level=INFO source=images.go:473 msg="total blobs: 37"
+time=2026-08-23T19:10:10.083+05:30 level=INFO source=images.go:480 msg="total unused blobs removed: 0"
+time=2026-08-23T19:10:10.093+05:30 level=INFO source=routes.go:1718 msg="Listening on 127.0.0.1:11434 (version 0.16.3)"
+time=2026-08-23T19:10:10.098+05:30 level=INFO source=runner.go:67 msg="discovering available GPUs..."
+time=2026-08-23T19:10:10.123+05:30 level=INFO source=server.go:431 msg="starting runner" cmd="C:\\Users\\Swapnil gite\\AppData\\Local\\Programs\\Ollama\\ollama.exe runner --ollama-engine --port 50201"
+time=2026-08-23T19:10:12.243+05:30 level=INFO source=server.go:431 msg="starting runner" cmd="C:\\Users\\Swapnil gite\\AppData\\Local\\Programs\\Ollama\\ollama.exe runner --ollama-engine --port 50234"
+time=2026-08-23T19:10:13.326+05:30 level=INFO source=server.go:431 msg="starting runner" cmd="C:\\Users\\Swapnil gite\\AppData\\Local\\Programs\\Ollama\\ollama.exe runner --ollama-engine --port 50258"
+time=2026-08-23T19:10:13.698+05:30 level=INFO source=runner.go:106 msg="experimental Vulkan support disabled.  To enable, set OLLAMA_VULKAN=1"
+time=2026-08-23T19:10:13.702+05:30 level=INFO source=server.go:431 msg="starting runner" cmd="C:\\Users\\Swapnil gite\\AppData\\Local\\Programs\\Ollama\\ollama.exe runner --ollama-engine --port 50277"
+time=2026-08-23T19:10:14.439+05:30 level=INFO source=types.go:42 msg="inference compute" id=GPU-b5a52250-ad84-2211-3011-507d8cfe0faa filter_id="" library=CUDA compute=8.6 name=CUDA0 description="NVIDIA GeForce RTX 3050 Laptop GPU" libdirs=ollama,cuda_v12 driver=12.7 pci_id=0000:01:00.0 type=discrete total="4.0 GiB" available="3.7 GiB"
+time=2026-08-23T19:10:14.439+05:30 level=INFO source=routes.go:1768 msg="vram-based default context" total_vram="4.0 GiB" default_num_ctx=4096
+[GIN] 2026/08/23 - 19:10:14 | 200 |      4.3502ms |       127.0.0.1 | GET      "/"
+[GIN] 2026/08/23 - 19:10:14 | 200 |      4.3502ms |       127.0.0.1 | GET      "/"
+19:10:14 | INFO     | Ollama auto-started successfully (PID: 14712)
+19:10:14 | INFO     | Vision Agent initialized
+19:10:14 | INFO     | 📁 File Agent initialized (enhanced)
+19:10:15 | INFO     | Web Agent initialized
+19:10:15 | INFO     | Business Agent initialized
+19:10:15 | INFO     | Business Process Automation initialized
+19:10:15 | INFO     | Enterprise Security initialized
+19:10:15 | INFO     | Advanced Analytics initialized
+19:10:15 | INFO     | Advanced Neural Network initialized
+19:10:15 | INFO     | Meta-Learning System initialized
+19:10:15 | INFO     | Self-Reflection System initialized
+19:10:15 | INFO     | Autonomous Goal System initialized
+19:10:15 | INFO     | Concept Discovery System initialized
+19:10:15 | INFO     | Self-Programming System initialized
+19:10:15 | INFO     | Algorithm Optimization System initialized
+19:10:15 | INFO     | Self-Evolving Architecture initialized
+19:10:15 | INFO     | Advanced Cognitive Architecture initialized
+19:10:19 | INFO     | Voice enabled but server unavailable, attempting auto-start...
+19:10:20 | SUCCESS  | Voice server auto-started successfully
+19:10:20 | INFO     | Pruned old/excess sessions
+19:10:20 | INFO     | Session started: session_20260823_191020
+19:10:20 | SUCCESS  | All systems initialized
+19:10:20 | INFO     | ============================================================
+
+============================================================
+AUTONOMOUS SYSTEM CONTROLLER
+============================================================
+
+Greetings. I am ASC, your advanced local AI assistant.
+I'm here to help you with tasks, answer questions, and assist with your work.
+
+Voice control is active. Type 'voice' to speak a command, or type your command normally.
+
+How may I assist you today?
+
+You: show system info
+19:10:26 | INFO     | Processing command: show system info
+19:10:43 | INFO     | 📝 Episode recorded: show system info -> success
+
+Excellent. Task completed successfully via direct execution.
+
+System Status:
+  CPU: 3.8% (16 cores)
+  RAM: 95.8% used (0.31GB free)
+  Disk: 85.1% used (62.08GB free)
+
+You: show network status 
+19:11:51 | INFO     | Processing command: show network status
+19:12:03 | INFO     | 📝 Episode recorded: show network status -> success
+
+Excellent. Task completed successfully via direct execution.
+
+You: disk drives
+19:12:18 | INFO     | Processing command: disk drives
+19:12:30 | INFO     | 📝 Episode recorded: disk drives -> success
+
+Excellent. Task completed successfully via direct execution.
+
+You: check sll on github.com
+19:12:43 | INFO     | Processing command: check sll on github.com
+19:12:43 | INFO     | Using Playwright browser cache: C:\ms-playwright
+19:12:49 | INFO     | Playwright browser started: chromium (headless=False)
+19:13:02 | INFO     | 📝 Episode recorded: check sll on github.com -> success
+
+Excellent. Task completed successfully via direct execution.
+  Opened https://github.com via Playwright
+  Opened: https://github.com
+
+You: search files for ASC in the system
+19:14:09 | INFO     | Processing command: search files for ASC in the system
+19:14:09 | INFO     | 🔍 Searching for: ASC
+19:14:21 | INFO     | 📝 Episode recorded: search files for ASC in the system -> success
+
+Excellent. Task completed successfully via direct execution.
+
+Files Found (80 total):
+  - 'asc_test.txt' with content 'this is a test file from asc' (0.0KB)
+  - asc_diag_test.txt with content hello world (0.0KB)
+  - asc_test_note.txt (0.0KB)
+  - asc_2026-02-27_08-48-41_705773.log (0.0KB)
+  - asc_2026-02-28_17-30-49_814158.log (0.0KB)
+  - asc_2026-03-01_10-46-50_348686.log (0.0KB)
+  - asc_2026-03-01_11-19-20_835587.log (0.0KB)
+  - asc_2026-03-01_16-52-09_441250.log (0.0KB)
+  - asc_2026-03-01_16-55-01_001407.log (0.0KB)
+  - asc_2026-03-01_16-55-15_129210.log (0.0KB)
+  - asc_2026-03-02_09-26-19_970718.log (0.0KB)
+  - asc_2026-03-02_09-43-13_610222.log (0.0KB)
+  - asc_2026-06-12_21-16-04_020906.log (0.0KB)
+  - asc_2026-06-12_21-17-20_666646.log (0.0KB)
+  - asc_2026-06-12_21-47-10_939135.log (0.0KB)
+  - asc_2026-06-16_17-33-18_574918.log (0.0KB)
+  - asc_2026-06-16_17-39-54_111296.log (0.0KB)
+  - asc_2026-06-16_17-45-10_811525.log (0.0KB)
+  - asc_2026-06-16_17-50-24_884794.log (0.0KB)
+  - asc_2026-06-21_11-20-22_562959.log (0.0KB)
+
+You: search for best laptops under 50000
+19:15:12 | INFO     | Processing command: search for best laptops under 50000
+19:15:12 | WARNING  | Playwright navigation failed: Page.goto: Target page, context or browser has been closed
+19:15:12 | SUCCESS  | Opened: chrome (PID: 17264)
+19:15:28 | INFO     | 📝 Episode recorded: search for best laptops under 50000 -> success
+
+Excellent. Task completed successfully via direct execution.
+  Searched for 'best laptops under 50000' in chrome
+  Opened: https://www.google.com/search?q=best+laptops+under+50000
+
+You: suggest me laptops under 100000
+19:15:47 | INFO     | Processing command: suggest me laptops under 100000
+19:15:47 | INFO     | Council task (medium): suggest me laptops under 100000
+time=2026-08-23T19:15:47.604+05:30 level=INFO source=cpu_windows.go:148 msg=packages count=1
+time=2026-08-23T19:15:47.604+05:30 level=INFO source=cpu_windows.go:195 msg="" package=0 cores=8 efficiency=0 threads=16
+llama_model_loader: loaded meta data with 35 key-value pairs and 434 tensors from C:\Users\Swapnil gite\.ollama\models\blobs\sha256-5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6 (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen2
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = Qwen2.5 3B Instruct
+llama_model_loader: - kv   3:                           general.finetune str              = Instruct
+llama_model_loader: - kv   4:                           general.basename str              = Qwen2.5
+llama_model_loader: - kv   5:                         general.size_label str              = 3B
+llama_model_loader: - kv   6:                            general.license str              = other
+llama_model_loader: - kv   7:                       general.license.name str              = qwen-research
+llama_model_loader: - kv   8:                       general.license.link str              = https://huggingface.co/Qwen/Qwen2.5-3...
+llama_model_loader: - kv   9:                   general.base_model.count u32              = 1
+llama_model_loader: - kv  10:                  general.base_model.0.name str              = Qwen2.5 3B
+llama_model_loader: - kv  11:          general.base_model.0.organization str              = Qwen
+llama_model_loader: - kv  12:              general.base_model.0.repo_url str              = https://huggingface.co/Qwen/Qwen2.5-3B
+llama_model_loader: - kv  13:                               general.tags arr[str,2]       = ["chat", "text-generation"]
+llama_model_loader: - kv  14:                          general.languages arr[str,1]       = ["en"]
+llama_model_loader: - kv  15:                          qwen2.block_count u32              = 36
+llama_model_loader: - kv  16:                       qwen2.context_length u32              = 32768
+llama_model_loader: - kv  17:                     qwen2.embedding_length u32              = 2048
+llama_model_loader: - kv  18:                  qwen2.feed_forward_length u32              = 11008
+llama_model_loader: - kv  19:                 qwen2.attention.head_count u32              = 16
+llama_model_loader: - kv  20:              qwen2.attention.head_count_kv u32              = 2
+llama_model_loader: - kv  21:                       qwen2.rope.freq_base f32              = 1000000.000000
+llama_model_loader: - kv  22:     qwen2.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  23:                          general.file_type u32              = 15
+llama_model_loader: - kv  24:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  25:                         tokenizer.ggml.pre str              = qwen2
+llama_model_loader: - kv  26:                      tokenizer.ggml.tokens arr[str,151936]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  27:                  tokenizer.ggml.token_type arr[i32,151936]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  28:                      tokenizer.ggml.merges arr[str,151387]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  29:                tokenizer.ggml.eos_token_id u32              = 151645
+llama_model_loader: - kv  30:            tokenizer.ggml.padding_token_id u32              = 151643
+llama_model_loader: - kv  31:                tokenizer.ggml.bos_token_id u32              = 151643
+llama_model_loader: - kv  32:               tokenizer.ggml.add_bos_token bool             = false
+llama_model_loader: - kv  33:                    tokenizer.chat_template str              = {%- if tools %}\n    {{- '<|im_start|>...
+llama_model_loader: - kv  34:               general.quantization_version u32              = 2
+llama_model_loader: - type  f32:  181 tensors
+llama_model_loader: - type q4_K:  216 tensors
+llama_model_loader: - type q6_K:   37 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = Q4_K - Medium
+print_info: file size   = 1.79 GiB (4.99 BPW) 
+load: printing all EOG tokens:
+load:   - 151643 ('<|endoftext|>')
+load:   - 151645 ('<|im_end|>')
+load:   - 151662 ('<|fim_pad|>')
+load:   - 151663 ('<|repo_name|>')
+load:   - 151664 ('<|file_sep|>')
+load: special tokens cache size = 22
+load: token to piece cache size = 0.9310 MB
+print_info: arch             = qwen2
+print_info: vocab_only       = 1
+print_info: no_alloc         = 0
+print_info: model type       = ?B
+print_info: model params     = 3.09 B
+print_info: general.name     = Qwen2.5 3B Instruct
+print_info: vocab type       = BPE
+print_info: n_vocab          = 151936
+print_info: n_merges         = 151387
+print_info: BOS token        = 151643 '<|endoftext|>'
+print_info: EOS token        = 151645 '<|im_end|>'
+print_info: EOT token        = 151645 '<|im_end|>'
+print_info: PAD token        = 151643 '<|endoftext|>'
+print_info: LF token         = 198 'Ċ'
+print_info: FIM PRE token    = 151659 '<|fim_prefix|>'
+print_info: FIM SUF token    = 151661 '<|fim_suffix|>'
+print_info: FIM MID token    = 151660 '<|fim_middle|>'
+print_info: FIM PAD token    = 151662 '<|fim_pad|>'
+print_info: FIM REP token    = 151663 '<|repo_name|>'
+print_info: FIM SEP token    = 151664 '<|file_sep|>'
+print_info: EOG token        = 151643 '<|endoftext|>'
+print_info: EOG token        = 151645 '<|im_end|>'
+print_info: EOG token        = 151662 '<|fim_pad|>'
+print_info: EOG token        = 151663 '<|repo_name|>'
+print_info: EOG token        = 151664 '<|file_sep|>'
+print_info: max token length = 256
+llama_model_load: vocab only - skipping tensors
+time=2026-08-23T19:15:47.999+05:30 level=INFO source=server.go:431 msg="starting runner" cmd="C:\\Users\\Swapnil gite\\AppData\\Local\\Programs\\Ollama\\ollama.exe runner --model C:\\Users\\Swapnil gite\\.ollama\\models\\blobs\\sha256-5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6 --port 54152"
+time=2026-08-23T19:15:48.007+05:30 level=INFO source=sched.go:491 msg="system memory" total="7.4 GiB" free="755.1 MiB" free_swap="2.0 GiB"
+time=2026-08-23T19:15:48.008+05:30 level=INFO source=server.go:498 msg="loading model" "model layers"=37 requested=0
+time=2026-08-23T19:15:48.011+05:30 level=INFO source=device.go:245 msg="model weights" device=CPU size="1.8 GiB"
+time=2026-08-23T19:15:48.012+05:30 level=INFO source=device.go:256 msg="kv cache" device=CPU size="72.0 MiB"
+time=2026-08-23T19:15:48.012+05:30 level=INFO source=device.go:272 msg="total memory" size="1.9 GiB"
+time=2026-08-23T19:15:48.137+05:30 level=INFO source=runner.go:965 msg="starting go runner"
+load_backend: loaded CPU backend from C:\Users\Swapnil gite\AppData\Local\Programs\Ollama\lib\ollama\ggml-cpu-haswell.dll
+time=2026-08-23T19:15:48.197+05:30 level=INFO source=ggml.go:104 msg=system CPU.0.SSE3=1 CPU.0.SSSE3=1 CPU.0.AVX=1 CPU.0.AVX2=1 CPU.0.F16C=1 CPU.0.FMA=1 CPU.0.BMI2=1 CPU.0.LLAMAFILE=1 CPU.1.LLAMAFILE=1 compiler=cgo(clang)
+time=2026-08-23T19:15:48.199+05:30 level=INFO source=runner.go:1001 msg="Server listening on 127.0.0.1:54152"
+time=2026-08-23T19:15:48.213+05:30 level=INFO source=runner.go:895 msg=load request="{Operation:commit LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:Auto KvSize:2048 KvCacheType: NumThreads:8 GPULayers:[] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-08-23T19:15:48.218+05:30 level=INFO source=server.go:1350 msg="waiting for llama runner to start responding"
+time=2026-08-23T19:15:48.219+05:30 level=INFO source=server.go:1384 msg="waiting for server to become available" status="llm server loading model"
+llama_model_loader: loaded meta data with 35 key-value pairs and 434 tensors from C:\Users\Swapnil gite\.ollama\models\blobs\sha256-5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6 (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen2
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = Qwen2.5 3B Instruct
+llama_model_loader: - kv   3:                           general.finetune str              = Instruct
+llama_model_loader: - kv   4:                           general.basename str              = Qwen2.5
+llama_model_loader: - kv   5:                         general.size_label str              = 3B
+llama_model_loader: - kv   6:                            general.license str              = other
+llama_model_loader: - kv   7:                       general.license.name str              = qwen-research
+llama_model_loader: - kv   8:                       general.license.link str              = https://huggingface.co/Qwen/Qwen2.5-3...
+llama_model_loader: - kv   9:                   general.base_model.count u32              = 1
+llama_model_loader: - kv  10:                  general.base_model.0.name str              = Qwen2.5 3B
+llama_model_loader: - kv  11:          general.base_model.0.organization str              = Qwen
+llama_model_loader: - kv  12:              general.base_model.0.repo_url str              = https://huggingface.co/Qwen/Qwen2.5-3B
+llama_model_loader: - kv  13:                               general.tags arr[str,2]       = ["chat", "text-generation"]
+llama_model_loader: - kv  14:                          general.languages arr[str,1]       = ["en"]
+llama_model_loader: - kv  15:                          qwen2.block_count u32              = 36
+llama_model_loader: - kv  16:                       qwen2.context_length u32              = 32768
+llama_model_loader: - kv  17:                     qwen2.embedding_length u32              = 2048
+llama_model_loader: - kv  18:                  qwen2.feed_forward_length u32              = 11008
+llama_model_loader: - kv  19:                 qwen2.attention.head_count u32              = 16
+llama_model_loader: - kv  20:              qwen2.attention.head_count_kv u32              = 2
+llama_model_loader: - kv  21:                       qwen2.rope.freq_base f32              = 1000000.000000
+llama_model_loader: - kv  22:     qwen2.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  23:                          general.file_type u32              = 15
+llama_model_loader: - kv  24:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  25:                         tokenizer.ggml.pre str              = qwen2
+llama_model_loader: - kv  26:                      tokenizer.ggml.tokens arr[str,151936]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  27:                  tokenizer.ggml.token_type arr[i32,151936]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  28:                      tokenizer.ggml.merges arr[str,151387]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  29:                tokenizer.ggml.eos_token_id u32              = 151645
+llama_model_loader: - kv  30:            tokenizer.ggml.padding_token_id u32              = 151643
+llama_model_loader: - kv  31:                tokenizer.ggml.bos_token_id u32              = 151643
+llama_model_loader: - kv  32:               tokenizer.ggml.add_bos_token bool             = false
+llama_model_loader: - kv  33:                    tokenizer.chat_template str              = {%- if tools %}\n    {{- '<|im_start|>...
+llama_model_loader: - kv  34:               general.quantization_version u32              = 2
+llama_model_loader: - type  f32:  181 tensors
+llama_model_loader: - type q4_K:  216 tensors
+llama_model_loader: - type q6_K:   37 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = Q4_K - Medium
+print_info: file size   = 1.79 GiB (4.99 BPW) 
+load: printing all EOG tokens:
+load:   - 151643 ('<|endoftext|>')
+load:   - 151645 ('<|im_end|>')
+load:   - 151662 ('<|fim_pad|>')
+load:   - 151663 ('<|repo_name|>')
+load:   - 151664 ('<|file_sep|>')
+load: special tokens cache size = 22
+load: token to piece cache size = 0.9310 MB
+print_info: arch             = qwen2
+print_info: vocab_only       = 0
+print_info: no_alloc         = 0
+print_info: n_ctx_train      = 32768
+print_info: n_embd           = 2048
+print_info: n_embd_inp       = 2048
+print_info: n_layer          = 36
+print_info: n_head           = 16
+print_info: n_head_kv        = 2
+print_info: n_rot            = 128
+print_info: n_swa            = 0
+print_info: is_swa_any       = 0
+print_info: n_embd_head_k    = 128
+print_info: n_embd_head_v    = 128
+print_info: n_gqa            = 8
+print_info: n_embd_k_gqa     = 256
+print_info: n_embd_v_gqa     = 256
+print_info: f_norm_eps       = 0.0e+00
+print_info: f_norm_rms_eps   = 1.0e-06
+print_info: f_clamp_kqv      = 0.0e+00
+print_info: f_max_alibi_bias = 0.0e+00
+print_info: f_logit_scale    = 0.0e+00
+print_info: f_attn_scale     = 0.0e+00
+print_info: n_ff             = 11008
+print_info: n_expert         = 0
+print_info: n_expert_used    = 0
+print_info: n_expert_groups  = 0
+print_info: n_group_used     = 0
+print_info: causal attn      = 1
+print_info: pooling type     = -1
+print_info: rope type        = 2
+print_info: rope scaling     = linear
+print_info: freq_base_train  = 1000000.0
+print_info: freq_scale_train = 1
+print_info: n_ctx_orig_yarn  = 32768
+print_info: rope_yarn_log_mul= 0.0000
+print_info: rope_finetuned   = unknown
+print_info: model type       = 3B
+print_info: model params     = 3.09 B
+print_info: general.name     = Qwen2.5 3B Instruct
+print_info: vocab type       = BPE
+print_info: n_vocab          = 151936
+print_info: n_merges         = 151387
+print_info: BOS token        = 151643 '<|endoftext|>'
+print_info: EOS token        = 151645 '<|im_end|>'
+print_info: EOT token        = 151645 '<|im_end|>'
+print_info: PAD token        = 151643 '<|endoftext|>'
+print_info: LF token         = 198 'Ċ'
+print_info: FIM PRE token    = 151659 '<|fim_prefix|>'
+print_info: FIM SUF token    = 151661 '<|fim_suffix|>'
+print_info: FIM MID token    = 151660 '<|fim_middle|>'
+print_info: FIM PAD token    = 151662 '<|fim_pad|>'
+print_info: FIM REP token    = 151663 '<|repo_name|>'
+print_info: FIM SEP token    = 151664 '<|file_sep|>'
+print_info: EOG token        = 151643 '<|endoftext|>'
+print_info: EOG token        = 151645 '<|im_end|>'
+print_info: EOG token        = 151662 '<|fim_pad|>'
+print_info: EOG token        = 151663 '<|repo_name|>'
+print_info: EOG token        = 151664 '<|file_sep|>'
+print_info: max token length = 256
+load_tensors: loading model tensors, this can take a while... (mmap = false)
+load_tensors:          CPU model buffer size =  1834.82 MiB
+llama_context: constructing llama_context
+llama_context: n_seq_max     = 1
+llama_context: n_ctx         = 2048
+llama_context: n_ctx_seq     = 2048
+llama_context: n_batch       = 512
+llama_context: n_ubatch      = 512
+llama_context: causal_attn   = 1
+llama_context: flash_attn    = auto
+llama_context: kv_unified    = false
+llama_context: freq_base     = 1000000.0
+llama_context: freq_scale    = 1
+llama_context: n_ctx_seq (2048) < n_ctx_train (32768) -- the full capacity of the model will not be utilized
+llama_context:        CPU  output buffer size =     0.59 MiB
+llama_kv_cache:        CPU KV buffer size =    72.00 MiB
+llama_kv_cache: size =   72.00 MiB (  2048 cells,  36 layers,  1/1 seqs), K (f16):   36.00 MiB, V (f16):   36.00 MiB
+llama_context: Flash Attention was auto, set to enabled
+llama_context:        CPU compute buffer size =   300.75 MiB
+llama_context: graph nodes  = 1231
+llama_context: graph splits = 1
+time=2026-08-23T19:15:53.764+05:30 level=INFO source=server.go:1388 msg="llama runner started in 5.76 seconds"
+time=2026-08-23T19:15:53.765+05:30 level=INFO source=sched.go:566 msg="loaded runners" count=1
+time=2026-08-23T19:15:53.766+05:30 level=INFO source=server.go:1350 msg="waiting for llama runner to start responding"
+time=2026-08-23T19:15:53.767+05:30 level=INFO source=server.go:1388 msg="llama runner started in 5.76 seconds"
+[GIN] 2026/08/23 - 19:16:30 | 200 |   43.4709632s |       127.0.0.1 | POST     "/api/generate"
+19:16:30 | INFO     | ðŸŽ¯ Strategic decision by strategist using qwen2.5:3b
+19:16:31 | INFO     | Plan created by: strategist
+19:16:31 | INFO     | Executing plan...
+19:16:31 | WARNING  | Playwright navigation failed: Page.goto: Target page, context or browser has been closed
+19:16:31 | SUCCESS  | Opened: chrome (PID: 19524)
+19:16:36 | SUCCESS  | Execution complete: 1/1 steps succeeded
+19:16:49 | INFO     | 📝 Episode recorded: suggest me laptops under 100000 -> success
+
+Success. I've processed your request through the single_model tier.
+  Searched for 'laptops under 100000 INR' in chrome
+  Opened: https://www.google.com/search?q=laptops+under+100000+INR
+
+You: navigate to github.com
+19:18:54 | INFO     | Processing command: navigate to github.com
+19:18:54 | WARNING  | Playwright navigation failed: Page.goto: Target page, context or browser has been closed
+19:18:54 | SUCCESS  | Opened: chrome (PID: 19956)
+19:19:08 | INFO     | 📝 Episode recorded: navigate to github.com -> success
+
+Excellent. Task completed successfully via direct execution.
+  Opened https://github.com in chrome
+  Opened: https://github.com
+
+You: navigate to amazon.in and search for laptops
+19:19:28 | INFO     | Processing command: navigate to amazon.in and search for laptops
+19:19:28 | INFO     | Council task (complex): navigate to amazon.in and search for laptops
+19:19:28 | INFO     | Sequential council (RAM-optimized)...
+19:19:28 | INFO     | Consulting strategist...
+[GIN] 2026/08/23 - 19:19:44 | 200 |   15.7827065s |       127.0.0.1 | POST     "/api/generate"
+19:19:45 | INFO     | Consulting analyst...
+[GIN] 2026/08/23 - 19:19:59 | 200 |    14.202224s |       127.0.0.1 | POST     "/api/generate"
+19:20:00 | INFO     | Consulting executor...
+[GIN] 2026/08/23 - 19:20:15 | 200 |   14.2911364s |       127.0.0.1 | POST     "/api/generate"
+19:20:16 | INFO     | Chairman synthesizing...
+[GIN] 2026/08/23 - 19:20:42 | 200 |   25.8478071s |       127.0.0.1 | POST     "/api/generate"
+19:20:42 | SUCCESS  | âœ… Chairman decision complete
+19:20:42 | INFO     | Plan created by: sequential_council
+19:20:42 | INFO     | Executing plan...
+19:20:42 | WARNING  | Playwright navigation failed: Page.goto: Target page, context or browser has been closed
+19:20:42 | SUCCESS  | Opened: chrome (PID: 4088)
+19:20:45 | SUCCESS  | Execution complete: 1/1 steps succeeded
+19:20:57 | INFO     | 📝 Episode recorded: navigate to amazon.in and search for laptops -> success
+
+Excellent. I've completed 1 of 1 steps in that sequence.
+  Searched for 'laptops' in chrome
+  Opened: https://www.google.com/search?q=laptops
+
+You: send an email to swapnilgite1311@gmail.com
+19:21:35 | INFO     | Processing command: send an email to swapnilgite1311@gmail.com
+19:21:47 | INFO     | 📝 Episode recorded: send an email to swapnilgite1311@gmail.com -> failure
+
+I encountered an issue: Email not configured
+
+Would you like me to try a different approach, or would you prefer to work on something else?
+
+You: hey
+19:22:01 | INFO     | Processing command: hey
+time=2026-08-23T19:22:01.963+05:30 level=INFO source=cpu_windows.go:148 msg=packages count=1
+time=2026-08-23T19:22:01.967+05:30 level=INFO source=cpu_windows.go:195 msg="" package=0 cores=8 efficiency=0 threads=16
+llama_model_loader: loaded meta data with 34 key-value pairs and 288 tensors from C:\Users\Swapnil gite\.ollama\models\blobs\sha256-7462734796d67c40ecec2ca98eddf970e171dbb6b370e43fd633ee75b69abe1b (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = gemma2
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = Gemma 2.0 2b It Transformers
+llama_model_loader: - kv   3:                           general.finetune str              = it-transformers
+llama_model_loader: - kv   4:                           general.basename str              = gemma-2.0
+llama_model_loader: - kv   5:                         general.size_label str              = 2B
+llama_model_loader: - kv   6:                            general.license str              = gemma
+llama_model_loader: - kv   7:                      gemma2.context_length u32              = 8192
+llama_model_loader: - kv   8:                    gemma2.embedding_length u32              = 2304
+llama_model_loader: - kv   9:                         gemma2.block_count u32              = 26
+llama_model_loader: - kv  10:                 gemma2.feed_forward_length u32              = 9216
+llama_model_loader: - kv  11:                gemma2.attention.head_count u32              = 8
+llama_model_loader: - kv  12:             gemma2.attention.head_count_kv u32              = 4
+llama_model_loader: - kv  13:    gemma2.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  14:                gemma2.attention.key_length u32              = 256
+llama_model_loader: - kv  15:              gemma2.attention.value_length u32              = 256
+llama_model_loader: - kv  16:                          general.file_type u32              = 2
+llama_model_loader: - kv  17:              gemma2.attn_logit_softcapping f32              = 50.000000
+llama_model_loader: - kv  18:             gemma2.final_logit_softcapping f32              = 30.000000
+llama_model_loader: - kv  19:            gemma2.attention.sliding_window u32              = 4096
+llama_model_loader: - kv  20:                       tokenizer.ggml.model str              = llama
+llama_model_loader: - kv  21:                         tokenizer.ggml.pre str              = default
+llama_model_loader: - kv  22:                      tokenizer.ggml.tokens arr[str,256000]  = ["<pad>", "<eos>", "<bos>", "<unk>", ...
+llama_model_loader: - kv  23:                      tokenizer.ggml.scores arr[f32,256000]  = [-1000.000000, -1000.000000, -1000.00...
+llama_model_loader: - kv  24:                  tokenizer.ggml.token_type arr[i32,256000]  = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, ...
+llama_model_loader: - kv  25:                tokenizer.ggml.bos_token_id u32              = 2
+llama_model_loader: - kv  26:                tokenizer.ggml.eos_token_id u32              = 1
+llama_model_loader: - kv  27:            tokenizer.ggml.unknown_token_id u32              = 3
+llama_model_loader: - kv  28:            tokenizer.ggml.padding_token_id u32              = 0
+llama_model_loader: - kv  29:               tokenizer.ggml.add_bos_token bool             = true
+llama_model_loader: - kv  30:               tokenizer.ggml.add_eos_token bool             = false
+llama_model_loader: - kv  31:                    tokenizer.chat_template str              = {{ bos_token }}{% if messages[0]['rol...
+llama_model_loader: - kv  32:            tokenizer.ggml.add_space_prefix bool             = false
+llama_model_loader: - kv  33:               general.quantization_version u32              = 2
+llama_model_loader: - type  f32:  105 tensors
+llama_model_loader: - type q4_0:  182 tensors
+llama_model_loader: - type q6_K:    1 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = Q4_0
+print_info: file size   = 1.51 GiB (4.97 BPW) 
+load: control-looking token:    107 '<end_of_turn>' was not control-type; this is probably a bug in the model. its type will be overridden
+load: special_eos_id is not in special_eog_ids - the tokenizer config may be incorrect
+load: printing all EOG tokens:
+load:   - 1 ('<eos>')
+load:   - 107 ('<end_of_turn>')
+load: special tokens cache size = 249
+load: token to piece cache size = 1.6014 MB
+print_info: arch             = gemma2
+print_info: vocab_only       = 1
+print_info: no_alloc         = 0
+print_info: model type       = ?B
+print_info: model params     = 2.61 B
+print_info: general.name     = Gemma 2.0 2b It Transformers
+print_info: vocab type       = SPM
+print_info: n_vocab          = 256000
+print_info: n_merges         = 0
+print_info: BOS token        = 2 '<bos>'
+print_info: EOS token        = 1 '<eos>'
+print_info: EOT token        = 107 '<end_of_turn>'
+print_info: UNK token        = 3 '<unk>'
+print_info: PAD token        = 0 '<pad>'
+print_info: LF token         = 227 '<0x0A>'
+print_info: EOG token        = 1 '<eos>'
+print_info: EOG token        = 107 '<end_of_turn>'
+print_info: max token length = 48
+llama_model_load: vocab only - skipping tensors
+time=2026-08-23T19:22:02.447+05:30 level=INFO source=server.go:431 msg="starting runner" cmd="C:\\Users\\Swapnil gite\\AppData\\Local\\Programs\\Ollama\\ollama.exe runner --model C:\\Users\\Swapnil gite\\.ollama\\models\\blobs\\sha256-7462734796d67c40ecec2ca98eddf970e171dbb6b370e43fd633ee75b69abe1b --port 51761"
+time=2026-08-23T19:22:02.456+05:30 level=INFO source=sched.go:491 msg="system memory" total="7.4 GiB" free="2.5 GiB" free_swap="3.6 GiB"
+time=2026-08-23T19:22:02.457+05:30 level=INFO source=server.go:498 msg="loading model" "model layers"=27 requested=0
+time=2026-08-23T19:22:02.462+05:30 level=INFO source=device.go:245 msg="model weights" device=CPU size="1.5 GiB"
+time=2026-08-23T19:22:02.463+05:30 level=INFO source=device.go:256 msg="kv cache" device=CPU size="208.0 MiB"
+time=2026-08-23T19:22:02.463+05:30 level=INFO source=device.go:272 msg="total memory" size="1.7 GiB"
+time=2026-08-23T19:22:02.665+05:30 level=INFO source=runner.go:965 msg="starting go runner"
+load_backend: loaded CPU backend from C:\Users\Swapnil gite\AppData\Local\Programs\Ollama\lib\ollama\ggml-cpu-haswell.dll
+time=2026-08-23T19:22:02.691+05:30 level=INFO source=ggml.go:104 msg=system CPU.0.SSE3=1 CPU.0.SSSE3=1 CPU.0.AVX=1 CPU.0.AVX2=1 CPU.0.F16C=1 CPU.0.FMA=1 CPU.0.BMI2=1 CPU.0.LLAMAFILE=1 CPU.1.LLAMAFILE=1 compiler=cgo(clang)
+time=2026-08-23T19:22:02.694+05:30 level=INFO source=runner.go:1001 msg="Server listening on 127.0.0.1:51761"
+time=2026-08-23T19:22:02.707+05:30 level=INFO source=runner.go:895 msg=load request="{Operation:commit LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:Auto KvSize:2048 KvCacheType: NumThreads:8 GPULayers:[] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-08-23T19:22:02.709+05:30 level=INFO source=server.go:1350 msg="waiting for llama runner to start responding"
+time=2026-08-23T19:22:02.710+05:30 level=INFO source=server.go:1384 msg="waiting for server to become available" status="llm server loading model"
+llama_model_loader: loaded meta data with 34 key-value pairs and 288 tensors from C:\Users\Swapnil gite\.ollama\models\blobs\sha256-7462734796d67c40ecec2ca98eddf970e171dbb6b370e43fd633ee75b69abe1b (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = gemma2
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = Gemma 2.0 2b It Transformers
+llama_model_loader: - kv   3:                           general.finetune str              = it-transformers
+llama_model_loader: - kv   4:                           general.basename str              = gemma-2.0
+llama_model_loader: - kv   5:                         general.size_label str              = 2B
+llama_model_loader: - kv   6:                            general.license str              = gemma
+llama_model_loader: - kv   7:                      gemma2.context_length u32              = 8192
+llama_model_loader: - kv   8:                    gemma2.embedding_length u32              = 2304
+llama_model_loader: - kv   9:                         gemma2.block_count u32              = 26
+llama_model_loader: - kv  10:                 gemma2.feed_forward_length u32              = 9216
+llama_model_loader: - kv  11:                gemma2.attention.head_count u32              = 8
+llama_model_loader: - kv  12:             gemma2.attention.head_count_kv u32              = 4
+llama_model_loader: - kv  13:    gemma2.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  14:                gemma2.attention.key_length u32              = 256
+llama_model_loader: - kv  15:              gemma2.attention.value_length u32              = 256
+llama_model_loader: - kv  16:                          general.file_type u32              = 2
+llama_model_loader: - kv  17:              gemma2.attn_logit_softcapping f32              = 50.000000
+llama_model_loader: - kv  18:             gemma2.final_logit_softcapping f32              = 30.000000
+llama_model_loader: - kv  19:            gemma2.attention.sliding_window u32              = 4096
+llama_model_loader: - kv  20:                       tokenizer.ggml.model str              = llama
+llama_model_loader: - kv  21:                         tokenizer.ggml.pre str              = default
+llama_model_loader: - kv  22:                      tokenizer.ggml.tokens arr[str,256000]  = ["<pad>", "<eos>", "<bos>", "<unk>", ...
+llama_model_loader: - kv  23:                      tokenizer.ggml.scores arr[f32,256000]  = [-1000.000000, -1000.000000, -1000.00...
+llama_model_loader: - kv  24:                  tokenizer.ggml.token_type arr[i32,256000]  = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, ...
+llama_model_loader: - kv  25:                tokenizer.ggml.bos_token_id u32              = 2
+llama_model_loader: - kv  26:                tokenizer.ggml.eos_token_id u32              = 1
+llama_model_loader: - kv  27:            tokenizer.ggml.unknown_token_id u32              = 3
+llama_model_loader: - kv  28:            tokenizer.ggml.padding_token_id u32              = 0
+llama_model_loader: - kv  29:               tokenizer.ggml.add_bos_token bool             = true
+llama_model_loader: - kv  30:               tokenizer.ggml.add_eos_token bool             = false
+llama_model_loader: - kv  31:                    tokenizer.chat_template str              = {{ bos_token }}{% if messages[0]['rol...
+llama_model_loader: - kv  32:            tokenizer.ggml.add_space_prefix bool             = false
+llama_model_loader: - kv  33:               general.quantization_version u32              = 2
+llama_model_loader: - type  f32:  105 tensors
+llama_model_loader: - type q4_0:  182 tensors
+llama_model_loader: - type q6_K:    1 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = Q4_0
+print_info: file size   = 1.51 GiB (4.97 BPW) 
+load: control-looking token:    107 '<end_of_turn>' was not control-type; this is probably a bug in the model. its type will be overridden
+load: special_eos_id is not in special_eog_ids - the tokenizer config may be incorrect
+load: printing all EOG tokens:
+load:   - 1 ('<eos>')
+load:   - 107 ('<end_of_turn>')
+load: special tokens cache size = 249
+load: token to piece cache size = 1.6014 MB
+print_info: arch             = gemma2
+print_info: vocab_only       = 0
+print_info: no_alloc         = 0
+print_info: n_ctx_train      = 8192
+print_info: n_embd           = 2304
+print_info: n_embd_inp       = 2304
+print_info: n_layer          = 26
+print_info: n_head           = 8
+print_info: n_head_kv        = 4
+print_info: n_rot            = 256
+print_info: n_swa            = 4096
+print_info: is_swa_any       = 1
+print_info: n_embd_head_k    = 256
+print_info: n_embd_head_v    = 256
+print_info: n_gqa            = 2
+print_info: n_embd_k_gqa     = 1024
+print_info: n_embd_v_gqa     = 1024
+print_info: f_norm_eps       = 0.0e+00
+print_info: f_norm_rms_eps   = 1.0e-06
+print_info: f_clamp_kqv      = 0.0e+00
+print_info: f_max_alibi_bias = 0.0e+00
+print_info: f_logit_scale    = 0.0e+00
+print_info: f_attn_scale     = 6.3e-02
+print_info: n_ff             = 9216
+print_info: n_expert         = 0
+print_info: n_expert_used    = 0
+print_info: n_expert_groups  = 0
+print_info: n_group_used     = 0
+print_info: causal attn      = 1
+print_info: pooling type     = 0
+print_info: rope type        = 2
+print_info: rope scaling     = linear
+print_info: freq_base_train  = 10000.0
+print_info: freq_scale_train = 1
+print_info: n_ctx_orig_yarn  = 8192
+print_info: rope_yarn_log_mul= 0.0000
+print_info: rope_finetuned   = unknown
+print_info: model type       = 2B
+print_info: model params     = 2.61 B
+print_info: general.name     = Gemma 2.0 2b It Transformers
+print_info: vocab type       = SPM
+print_info: n_vocab          = 256000
+print_info: n_merges         = 0
+print_info: BOS token        = 2 '<bos>'
+print_info: EOS token        = 1 '<eos>'
+print_info: EOT token        = 107 '<end_of_turn>'
+print_info: UNK token        = 3 '<unk>'
+print_info: PAD token        = 0 '<pad>'
+print_info: LF token         = 227 '<0x0A>'
+print_info: EOG token        = 1 '<eos>'
+print_info: EOG token        = 107 '<end_of_turn>'
+print_info: max token length = 48
+load_tensors: loading model tensors, this can take a while... (mmap = false)
+load_tensors:          CPU model buffer size =  1548.25 MiB
+llama_context: constructing llama_context
+llama_context: n_seq_max     = 1
+llama_context: n_ctx         = 2048
+llama_context: n_ctx_seq     = 2048
+llama_context: n_batch       = 512
+llama_context: n_ubatch      = 512
+llama_context: causal_attn   = 1
+llama_context: flash_attn    = auto
+llama_context: kv_unified    = false
+llama_context: freq_base     = 10000.0
+llama_context: freq_scale    = 1
+llama_context: n_ctx_seq (2048) < n_ctx_train (8192) -- the full capacity of the model will not be utilized
+llama_context:        CPU  output buffer size =     0.99 MiB
+llama_kv_cache_iswa: using full-size SWA cache (ref: https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
+llama_kv_cache_iswa: creating non-SWA KV cache, size = 2048 cells
+llama_kv_cache:        CPU KV buffer size =   104.00 MiB
+llama_kv_cache: size =  104.00 MiB (  2048 cells,  13 layers,  1/1 seqs), K (f16):   52.00 MiB, V (f16):   52.00 MiB
+llama_kv_cache_iswa: creating     SWA KV cache, size = 2048 cells
+llama_kv_cache:        CPU KV buffer size =   104.00 MiB
+llama_kv_cache: size =  104.00 MiB (  2048 cells,  13 layers,  1/1 seqs), K (f16):   52.00 MiB, V (f16):   52.00 MiB
+llama_context: Flash Attention was auto, set to enabled
+llama_context:        CPU compute buffer size =   504.50 MiB
+llama_context: graph nodes  = 948
+llama_context: graph splits = 1
+time=2026-08-23T19:22:06.236+05:30 level=INFO source=server.go:1388 msg="llama runner started in 3.78 seconds"
+time=2026-08-23T19:22:06.236+05:30 level=INFO source=sched.go:566 msg="loaded runners" count=1
+time=2026-08-23T19:22:06.237+05:30 level=INFO source=server.go:1350 msg="waiting for llama runner to start responding"
+time=2026-08-23T19:22:06.238+05:30 level=INFO source=server.go:1388 msg="llama runner started in 3.78 seconds"
+[GIN] 2026/08/23 - 19:22:12 | 200 |    11.433752s |       127.0.0.1 | POST     "/api/generate"
+19:22:24 | INFO     | 📝 Episode recorded: hey -> success
+
+ASC: Hey there!  What's on your mind today? 😊
+
+You: tell me what can you do? 
+19:22:37 | INFO     | Processing command: tell me what can you do?
+[GIN] 2026/08/23 - 19:23:20 | 200 |   42.5625274s |       127.0.0.1 | POST     "/api/generate"
+19:23:32 | INFO     | 📝 Episode recorded: tell me what can you do? -> success
+
+ASC: Well then, let's just say I have quite the repertoire of skills!  Think of me as your personal AI concierge, here to help with anything from mundane tasks like managing files and navigating the web to more creative endeavors such as brainstorming or even crafting a poem (though that might take a little longer...). 
+
+**Just ask!** Whether you need me to **analyze text for sentiment**, **organize a folder of photos by date**, or  **check your email inbox for unread messages**, I'm here to assist. Even if it's just a friendly chat about the latest sci-fi movie, feel free to dive into that too! 
+
+I can even help you get creative with things like:
+* **Summarizing articles and reports:** Need to know the gist of a lengthy report?  I can do that for you. 
+* **Generating different kinds of text formats**: Need a song lyric, a script outline, or even a business proposal? I'm your go-to!
+* **Learning new things about you**, so I can better anticipate your needs in the future.
+
+So, what's on your mind, friend? Let's see if we can make something happen!  😎
+
+You: which model are you using 
+19:24:14 | INFO     | Processing command: which model are you using
+19:24:14 | INFO     | Council task (medium): which model are you using
+time=2026-08-23T19:24:14.755+05:30 level=INFO source=cpu_windows.go:148 msg=packages count=1
+time=2026-08-23T19:24:14.755+05:30 level=INFO source=cpu_windows.go:195 msg="" package=0 cores=8 efficiency=0 threads=16
+llama_model_loader: loaded meta data with 35 key-value pairs and 434 tensors from C:\Users\Swapnil gite\.ollama\models\blobs\sha256-5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6 (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen2
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = Qwen2.5 3B Instruct
+llama_model_loader: - kv   3:                           general.finetune str              = Instruct
+llama_model_loader: - kv   4:                           general.basename str              = Qwen2.5
+llama_model_loader: - kv   5:                         general.size_label str              = 3B
+llama_model_loader: - kv   6:                            general.license str              = other
+llama_model_loader: - kv   7:                       general.license.name str              = qwen-research
+llama_model_loader: - kv   8:                       general.license.link str              = https://huggingface.co/Qwen/Qwen2.5-3...
+llama_model_loader: - kv   9:                   general.base_model.count u32              = 1
+llama_model_loader: - kv  10:                  general.base_model.0.name str              = Qwen2.5 3B
+llama_model_loader: - kv  11:          general.base_model.0.organization str              = Qwen
+llama_model_loader: - kv  12:              general.base_model.0.repo_url str              = https://huggingface.co/Qwen/Qwen2.5-3B
+llama_model_loader: - kv  13:                               general.tags arr[str,2]       = ["chat", "text-generation"]
+llama_model_loader: - kv  14:                          general.languages arr[str,1]       = ["en"]
+llama_model_loader: - kv  15:                          qwen2.block_count u32              = 36
+llama_model_loader: - kv  16:                       qwen2.context_length u32              = 32768
+llama_model_loader: - kv  17:                     qwen2.embedding_length u32              = 2048
+llama_model_loader: - kv  18:                  qwen2.feed_forward_length u32              = 11008
+llama_model_loader: - kv  19:                 qwen2.attention.head_count u32              = 16
+llama_model_loader: - kv  20:              qwen2.attention.head_count_kv u32              = 2
+llama_model_loader: - kv  21:                       qwen2.rope.freq_base f32              = 1000000.000000
+llama_model_loader: - kv  22:     qwen2.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  23:                          general.file_type u32              = 15
+llama_model_loader: - kv  24:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  25:                         tokenizer.ggml.pre str              = qwen2
+llama_model_loader: - kv  26:                      tokenizer.ggml.tokens arr[str,151936]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  27:                  tokenizer.ggml.token_type arr[i32,151936]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  28:                      tokenizer.ggml.merges arr[str,151387]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  29:                tokenizer.ggml.eos_token_id u32              = 151645
+llama_model_loader: - kv  30:            tokenizer.ggml.padding_token_id u32              = 151643
+llama_model_loader: - kv  31:                tokenizer.ggml.bos_token_id u32              = 151643
+llama_model_loader: - kv  32:               tokenizer.ggml.add_bos_token bool             = false
+llama_model_loader: - kv  33:                    tokenizer.chat_template str              = {%- if tools %}\n    {{- '<|im_start|>...
+llama_model_loader: - kv  34:               general.quantization_version u32              = 2
+llama_model_loader: - type  f32:  181 tensors
+llama_model_loader: - type q4_K:  216 tensors
+llama_model_loader: - type q6_K:   37 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = Q4_K - Medium
+print_info: file size   = 1.79 GiB (4.99 BPW) 
+load: printing all EOG tokens:
+load:   - 151643 ('<|endoftext|>')
+load:   - 151645 ('<|im_end|>')
+load:   - 151662 ('<|fim_pad|>')
+load:   - 151663 ('<|repo_name|>')
+load:   - 151664 ('<|file_sep|>')
+load: special tokens cache size = 22
+load: token to piece cache size = 0.9310 MB
+print_info: arch             = qwen2
+print_info: vocab_only       = 1
+print_info: no_alloc         = 0
+print_info: model type       = ?B
+print_info: model params     = 3.09 B
+print_info: general.name     = Qwen2.5 3B Instruct
+print_info: vocab type       = BPE
+print_info: n_vocab          = 151936
+print_info: n_merges         = 151387
+print_info: BOS token        = 151643 '<|endoftext|>'
+print_info: EOS token        = 151645 '<|im_end|>'
+print_info: EOT token        = 151645 '<|im_end|>'
+print_info: PAD token        = 151643 '<|endoftext|>'
+print_info: LF token         = 198 'Ċ'
+print_info: FIM PRE token    = 151659 '<|fim_prefix|>'
+print_info: FIM SUF token    = 151661 '<|fim_suffix|>'
+print_info: FIM MID token    = 151660 '<|fim_middle|>'
+print_info: FIM PAD token    = 151662 '<|fim_pad|>'
+print_info: FIM REP token    = 151663 '<|repo_name|>'
+print_info: FIM SEP token    = 151664 '<|file_sep|>'
+print_info: EOG token        = 151643 '<|endoftext|>'
+print_info: EOG token        = 151645 '<|im_end|>'
+print_info: EOG token        = 151662 '<|fim_pad|>'
+print_info: EOG token        = 151663 '<|repo_name|>'
+print_info: EOG token        = 151664 '<|file_sep|>'
+print_info: max token length = 256
+llama_model_load: vocab only - skipping tensors
+time=2026-08-23T19:24:15.224+05:30 level=INFO source=server.go:431 msg="starting runner" cmd="C:\\Users\\Swapnil gite\\AppData\\Local\\Programs\\Ollama\\ollama.exe runner --model C:\\Users\\Swapnil gite\\.ollama\\models\\blobs\\sha256-5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6 --port 54203"
+time=2026-08-23T19:24:15.233+05:30 level=INFO source=sched.go:491 msg="system memory" total="7.4 GiB" free="2.2 GiB" free_swap="3.7 GiB"
+time=2026-08-23T19:24:15.233+05:30 level=INFO source=server.go:498 msg="loading model" "model layers"=37 requested=0
+time=2026-08-23T19:24:15.235+05:30 level=INFO source=device.go:245 msg="model weights" device=CPU size="1.8 GiB"
+time=2026-08-23T19:24:15.235+05:30 level=INFO source=device.go:256 msg="kv cache" device=CPU size="72.0 MiB"
+time=2026-08-23T19:24:15.235+05:30 level=INFO source=device.go:272 msg="total memory" size="1.9 GiB"
+time=2026-08-23T19:24:15.450+05:30 level=INFO source=runner.go:965 msg="starting go runner"
+load_backend: loaded CPU backend from C:\Users\Swapnil gite\AppData\Local\Programs\Ollama\lib\ollama\ggml-cpu-haswell.dll
+time=2026-08-23T19:24:15.488+05:30 level=INFO source=ggml.go:104 msg=system CPU.0.SSE3=1 CPU.0.SSSE3=1 CPU.0.AVX=1 CPU.0.AVX2=1 CPU.0.F16C=1 CPU.0.FMA=1 CPU.0.BMI2=1 CPU.0.LLAMAFILE=1 CPU.1.LLAMAFILE=1 compiler=cgo(clang)
+time=2026-08-23T19:24:15.491+05:30 level=INFO source=runner.go:1001 msg="Server listening on 127.0.0.1:54203"
+time=2026-08-23T19:24:15.504+05:30 level=INFO source=runner.go:895 msg=load request="{Operation:commit LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:Auto KvSize:2048 KvCacheType: NumThreads:8 GPULayers:[] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-08-23T19:24:15.508+05:30 level=INFO source=server.go:1350 msg="waiting for llama runner to start responding"
+time=2026-08-23T19:24:15.512+05:30 level=INFO source=server.go:1384 msg="waiting for server to become available" status="llm server loading model"
+llama_model_loader: loaded meta data with 35 key-value pairs and 434 tensors from C:\Users\Swapnil gite\.ollama\models\blobs\sha256-5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6 (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen2
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = Qwen2.5 3B Instruct
+llama_model_loader: - kv   3:                           general.finetune str              = Instruct
+llama_model_loader: - kv   4:                           general.basename str              = Qwen2.5
+llama_model_loader: - kv   5:                         general.size_label str              = 3B
+llama_model_loader: - kv   6:                            general.license str              = other
+llama_model_loader: - kv   7:                       general.license.name str              = qwen-research
+llama_model_loader: - kv   8:                       general.license.link str              = https://huggingface.co/Qwen/Qwen2.5-3...
+llama_model_loader: - kv   9:                   general.base_model.count u32              = 1
+llama_model_loader: - kv  10:                  general.base_model.0.name str              = Qwen2.5 3B
+llama_model_loader: - kv  11:          general.base_model.0.organization str              = Qwen
+llama_model_loader: - kv  12:              general.base_model.0.repo_url str              = https://huggingface.co/Qwen/Qwen2.5-3B
+llama_model_loader: - kv  13:                               general.tags arr[str,2]       = ["chat", "text-generation"]
+llama_model_loader: - kv  14:                          general.languages arr[str,1]       = ["en"]
+llama_model_loader: - kv  15:                          qwen2.block_count u32              = 36
+llama_model_loader: - kv  16:                       qwen2.context_length u32              = 32768
+llama_model_loader: - kv  17:                     qwen2.embedding_length u32              = 2048
+llama_model_loader: - kv  18:                  qwen2.feed_forward_length u32              = 11008
+llama_model_loader: - kv  19:                 qwen2.attention.head_count u32              = 16
+llama_model_loader: - kv  20:              qwen2.attention.head_count_kv u32              = 2
+llama_model_loader: - kv  21:                       qwen2.rope.freq_base f32              = 1000000.000000
+llama_model_loader: - kv  22:     qwen2.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  23:                          general.file_type u32              = 15
+llama_model_loader: - kv  24:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  25:                         tokenizer.ggml.pre str              = qwen2
+llama_model_loader: - kv  26:                      tokenizer.ggml.tokens arr[str,151936]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  27:                  tokenizer.ggml.token_type arr[i32,151936]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  28:                      tokenizer.ggml.merges arr[str,151387]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  29:                tokenizer.ggml.eos_token_id u32              = 151645
+llama_model_loader: - kv  30:            tokenizer.ggml.padding_token_id u32              = 151643
+llama_model_loader: - kv  31:                tokenizer.ggml.bos_token_id u32              = 151643
+llama_model_loader: - kv  32:               tokenizer.ggml.add_bos_token bool             = false
+llama_model_loader: - kv  33:                    tokenizer.chat_template str              = {%- if tools %}\n    {{- '<|im_start|>...
+llama_model_loader: - kv  34:               general.quantization_version u32              = 2
+llama_model_loader: - type  f32:  181 tensors
+llama_model_loader: - type q4_K:  216 tensors
+llama_model_loader: - type q6_K:   37 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = Q4_K - Medium
+print_info: file size   = 1.79 GiB (4.99 BPW) 
+load: printing all EOG tokens:
+load:   - 151643 ('<|endoftext|>')
+load:   - 151645 ('<|im_end|>')
+load:   - 151662 ('<|fim_pad|>')
+load:   - 151663 ('<|repo_name|>')
+load:   - 151664 ('<|file_sep|>')
+load: special tokens cache size = 22
+load: token to piece cache size = 0.9310 MB
+print_info: arch             = qwen2
+print_info: vocab_only       = 0
+print_info: no_alloc         = 0
+print_info: n_ctx_train      = 32768
+print_info: n_embd           = 2048
+print_info: n_embd_inp       = 2048
+print_info: n_layer          = 36
+print_info: n_head           = 16
+print_info: n_head_kv        = 2
+print_info: n_rot            = 128
+print_info: n_swa            = 0
+print_info: is_swa_any       = 0
+print_info: n_embd_head_k    = 128
+print_info: n_embd_head_v    = 128
+print_info: n_gqa            = 8
+print_info: n_embd_k_gqa     = 256
+print_info: n_embd_v_gqa     = 256
+print_info: f_norm_eps       = 0.0e+00
+print_info: f_norm_rms_eps   = 1.0e-06
+print_info: f_clamp_kqv      = 0.0e+00
+print_info: f_max_alibi_bias = 0.0e+00
+print_info: f_logit_scale    = 0.0e+00
+print_info: f_attn_scale     = 0.0e+00
+print_info: n_ff             = 11008
+print_info: n_expert         = 0
+print_info: n_expert_used    = 0
+print_info: n_expert_groups  = 0
+print_info: n_group_used     = 0
+print_info: causal attn      = 1
+print_info: pooling type     = -1
+print_info: rope type        = 2
+print_info: rope scaling     = linear
+print_info: freq_base_train  = 1000000.0
+print_info: freq_scale_train = 1
+print_info: n_ctx_orig_yarn  = 32768
+print_info: rope_yarn_log_mul= 0.0000
+print_info: rope_finetuned   = unknown
+print_info: model type       = 3B
+print_info: model params     = 3.09 B
+print_info: general.name     = Qwen2.5 3B Instruct
+print_info: vocab type       = BPE
+print_info: n_vocab          = 151936
+print_info: n_merges         = 151387
+print_info: BOS token        = 151643 '<|endoftext|>'
+print_info: EOS token        = 151645 '<|im_end|>'
+print_info: EOT token        = 151645 '<|im_end|>'
+print_info: PAD token        = 151643 '<|endoftext|>'
+print_info: LF token         = 198 'Ċ'
+print_info: FIM PRE token    = 151659 '<|fim_prefix|>'
+print_info: FIM SUF token    = 151661 '<|fim_suffix|>'
+print_info: FIM MID token    = 151660 '<|fim_middle|>'
+print_info: FIM PAD token    = 151662 '<|fim_pad|>'
+print_info: FIM REP token    = 151663 '<|repo_name|>'
+print_info: FIM SEP token    = 151664 '<|file_sep|>'
+print_info: EOG token        = 151643 '<|endoftext|>'
+print_info: EOG token        = 151645 '<|im_end|>'
+print_info: EOG token        = 151662 '<|fim_pad|>'
+print_info: EOG token        = 151663 '<|repo_name|>'
+print_info: EOG token        = 151664 '<|file_sep|>'
+print_info: max token length = 256
+load_tensors: loading model tensors, this can take a while... (mmap = false)
+load_tensors:          CPU model buffer size =  1834.82 MiB
+llama_context: constructing llama_context
+llama_context: n_seq_max     = 1
+llama_context: n_ctx         = 2048
+llama_context: n_ctx_seq     = 2048
+llama_context: n_batch       = 512
+llama_context: n_ubatch      = 512
+llama_context: causal_attn   = 1
+llama_context: flash_attn    = auto
+llama_context: kv_unified    = false
+llama_context: freq_base     = 1000000.0
+llama_context: freq_scale    = 1
+llama_context: n_ctx_seq (2048) < n_ctx_train (32768) -- the full capacity of the model will not be utilized
+llama_context:        CPU  output buffer size =     0.59 MiB
+llama_kv_cache:        CPU KV buffer size =    72.00 MiB
+llama_kv_cache: size =   72.00 MiB (  2048 cells,  36 layers,  1/1 seqs), K (f16):   36.00 MiB, V (f16):   36.00 MiB
+llama_context: Flash Attention was auto, set to enabled
+llama_context:        CPU compute buffer size =   300.75 MiB
+llama_context: graph nodes  = 1231
+llama_context: graph splits = 1
+time=2026-08-23T19:24:19.783+05:30 level=INFO source=server.go:1388 msg="llama runner started in 4.55 seconds"
+time=2026-08-23T19:24:19.784+05:30 level=INFO source=sched.go:566 msg="loaded runners" count=1
+time=2026-08-23T19:24:19.784+05:30 level=INFO source=server.go:1350 msg="waiting for llama runner to start responding"
+time=2026-08-23T19:24:19.785+05:30 level=INFO source=server.go:1388 msg="llama runner started in 4.55 seconds"
+[GIN] 2026/08/23 - 19:24:50 | 200 |   35.6953009s |       127.0.0.1 | POST     "/api/generate"
+19:24:50 | INFO     | ðŸŽ¯ Strategic decision by strategist using qwen2.5:3b
+19:24:50 | INFO     | Plan created by: strategist
+19:24:50 | INFO     | Executing plan...
+19:24:50 | WARNING  | Playwright navigation failed: Page.goto: Target page, context or browser has been closed
+19:24:50 | SUCCESS  | Opened: chrome (PID: 8904)
+19:24:53 | SUCCESS  | Execution complete: 1/1 steps succeeded
+19:25:06 | INFO     | 📝 Episode recorded: which model are you using -> success
+
+Success. I've processed your request through the single_model tier.
+  Searched for 'Qwen model details' in chrome
+  Opened: https://www.google.com/search?q=Qwen+model+details
+
+You: flurbick wibble wobble
+19:27:14 | INFO     | Processing command: flurbick wibble wobble
+19:27:14 | INFO     | Council task (medium): flurbick wibble wobble
+[GIN] 2026/08/23 - 19:27:38 | 200 |   23.9712164s |       127.0.0.1 | POST     "/api/generate"
+19:27:38 | INFO     | ðŸŽ¯ Strategic decision by strategist using qwen2.5:3b
+19:27:38 | INFO     | Plan created by: strategist
+19:27:38 | INFO     | Executing plan...
+19:27:39 | SUCCESS  | Execution complete: 1/1 steps succeeded
+19:27:50 | INFO     | 📝 Episode recorded: flurbick wibble wobble -> success
+
+Success. I've processed your request through the single_model tier.
+  Task 'Understand Flurbick Wibble Wobble' created successfully
+
+You: 
 
 ============================================================
 AUTONOMOUS SYSTEM CONTROLLER
@@ -343,3 +1229,4 @@ Traceback (most recent call last):
 KeyboardInterrupt
 PS C:\Users\Swapnil gite\LAN\PROJECTS\Agentic Web\AGI-System> - 2026-08-23 - Team Lead: COMPLEX AUTOMATION DIAGNOSIS (supervisor-reported failures reproduced & root-caused). Found 4 defects: (A) multi-action commands collapsed to single step - "and"-sequences now decompose first, verified unit-level. (B) vague council steps triggered recursive re-planning loops (91s email, triple execution) - killed, now honest immediate failure. (C) false-success reporting: agent-level success=False buried under generic no-op fallbacks - eliminated. (D) HARD WALL: qwen2.5:3b cannot load on GPU (CUDA0 alloc fail) OR CPU (CPU buffer alloc fail) - machine has ~1.6GB RAM + ~1.3GB VRAM free while Brave/VSCode/desktop hold the rest. Only tinyllama fits. This is physics, not code. Voice root-caused separately: test.wav was MP4-in-disguise; server lacked -l en flag + parsed timestamped stdout; fixes applied.
 - 2026-08-23 - Team Lead: EMAIL ROUTING FIXED END-TO-END. Root causes stacked: (1) tool registry had NO business tools - planners could not express send_email/tasks/calendar at all; registered business_ops tool + _execute_business_action handler. (2) council prompt action menus omitted business actions - added create_task/list_tasks/send_email/calendar_event/schedule_reminder with param examples. (3) phrase gap: "send an email" did not match "send email". Verified live: email command now routes direct -> real handler in ~2s processing, reports HONEST "Email not configured" instead of fake success. To actually SEND mail: run configure_email with smtp creds (Gmail app-password). Council quality with apps closed: qwen runs on CPU, all members load, sequential decomposition works.
+- 2026-08-24 - Team Lead: STARTED punch list item 1 (block hallucinated network calls in run_command) - supervisor GO received for full list.
