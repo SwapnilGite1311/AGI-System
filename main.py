@@ -742,7 +742,16 @@ class AutonomousSystemController:
         if self.decompose_complex_tasks and self._contains_explicit_sequence(normalized):
             return {"tier": "sequential", "complexity": "complex", "source": "decomposer"}
 
-        if direct_intent and direct_intent.get("type") in {"browser_action", "fill_form", "confirm_submission"}:
+        # Known deterministic intents bypass the council on every machine -
+        # not just ones with learned history (fresh installs misrouted email,
+        # screen QA and screenshots into LLM planning).
+        if direct_intent and direct_intent.get("type") in {
+            "browser_action", "fill_form", "confirm_submission",
+            "send_email", "screen_qa", "screenshot",
+            "system_info", "network_info", "disk_drives",
+            "create_task", "list_tasks", "calendar_integration",
+            "security_ssl_check",
+        }:
             return {
                 "tier": "direct",
                 "complexity": "simple",
@@ -1638,7 +1647,14 @@ class AutonomousSystemController:
 
         app_open = re.match(r"^(?:open|launch|start)\s+(?P<app>[a-z0-9 ._-]+)$", normalized)
         if app_open:
-            return {"type": "open_application", "app": app_open.group("app").strip()}
+            intent = {"type": "open_application", "app": app_open.group("app").strip()}
+            # Browser privacy modifiers: "open incognito in chrome",
+            # "open chrome private window" etc.
+            if "incognito" in normalized or "private" in normalized:
+                browser = "edge" if "edge" in normalized else ("brave" if "brave" in normalized else "chrome")
+                intent["app"] = browser
+                intent["args"] = ["--incognito"] if browser != "brave" else ["--incognito"]
+            return intent
 
         if any(phrase in normalized for phrase in ["system info", "system status", "show cpu", "show ram"]):
             return {"type": "system_info"}
@@ -1828,7 +1844,7 @@ class AutonomousSystemController:
                 step_result = {"success": False, "error": "Missing source or destination for move."}
 
         elif intent_type == "open_application":
-            step_result = self.agents["system"].open_application(intent["app"])
+            step_result = self.agents["system"].open_application(intent["app"], args=intent.get("args"))
 
         elif intent_type == "close_application":
             step_result = self.agents["system"].close_application(intent["app"])

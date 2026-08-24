@@ -3,6 +3,7 @@ Learning Agent - command history, successful pattern reuse, and form memory.
 """
 
 import json
+import time
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -19,8 +20,11 @@ from learning.reward_model import RewardModel
 class LearningAgent:
     """Tracks execution history and reusable interaction patterns."""
 
+    REFRESH_INTERVAL = 300.0  # seconds between expensive model retrains
+
     def __init__(self, config_path: str = "./config/settings.json"):
         self.project_root = Path(config_path).resolve().parent.parent
+        self._last_model_refresh = 0.0
 
         with open(config_path, "r", encoding="utf-8") as file:
             self.config = json.load(file)
@@ -94,8 +98,15 @@ class LearningAgent:
             ) if isinstance(strategy.get("adaptive"), dict) else 0.0,
         }
         self.replay.add(experience)
-        self._refresh_adaptive_state()
-        self._refresh_phase5_state()
+
+        # Throttle expensive model refreshes: they retrain over the full
+        # experience buffer and cost 15-35s on CPU-bound machines. Once per
+        # REFRESH_INTERVAL seconds is plenty for offline learning.
+        now = time.time()
+        if now - getattr(self, "_last_model_refresh", 0.0) >= self.REFRESH_INTERVAL:
+            self._last_model_refresh = now
+            self._refresh_adaptive_state()
+            self._refresh_phase5_state()
         return experience
 
     def get_recent_commands(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -263,6 +274,12 @@ class LearningAgent:
             return self.adaptive_engine.state
 
     def _refresh_phase5_state(self, preferences: Dict[str, Any] = None) -> Dict[str, Any]:
+        # Central throttle: full retraining costs 10-16s on CPU machines.
+        # Explicit preference updates force an immediate refresh.
+        now = time.time()
+        if preferences is None and now - getattr(self, "_last_p5_refresh", 0.0) < self.REFRESH_INTERVAL:
+            return self.phase5_model.state
+        self._last_p5_refresh = now
         try:
             return self.phase5_model.fit(
                 self.replay.all(),

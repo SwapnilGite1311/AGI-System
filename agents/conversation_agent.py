@@ -113,6 +113,19 @@ class ConversationAgent:
         if not self.use_llm:
             return fallback
 
+        # Fast-path: pure greetings/smalltalk get instant canned replies.
+        # Booting a CPU model for 30-60s to say "hello" felt broken.
+        greeting_reply = self._instant_greeting_response(message)
+        if greeting_reply:
+            self._remember(message, greeting_reply)
+            return {
+                "success": True,
+                "tier": "conversation",
+                "mode": "chat",
+                "response": greeting_reply,
+                "model": "fastpath",
+            }
+
         try:
             prompt = self._build_prompt(message, context)
             response = await asyncio.wait_for(
@@ -140,6 +153,30 @@ class ConversationAgent:
             logger.warning("Conversation LLM unavailable, using fallback: {}", str(exc))
             fallback["llm_error"] = str(exc)
             return fallback
+
+    def _instant_greeting_response(self, message: str) -> Optional[str]:
+        """Instant replies for pure greetings/smalltalk - no model call.
+
+        Returns None for anything beyond simple pleasantries so real
+        questions still reach the LLM.
+        """
+        normalized = " ".join((message or "").lower().strip().rstrip("?!. ").split())
+        if re.fullmatch(
+            r"(?:hi|hello|hey|yo|namaste|good (?:morning|afternoon|evening))(?: there| buddy| asc| man)?",
+            normalized,
+        ):
+            import random
+
+            return random.choice([
+                "Hello! What can I do for you?",
+                "Hey! Ready when you are.",
+                "Hi there! What should we get done today?",
+            ])
+        if re.fullmatch(r"how are you", normalized):
+            return "Running smoothly, all systems operational. How can I help?"
+        if normalized in {"thanks", "thank you", "thx"}:
+            return "Anytime! Anything else?"
+        return None
 
     def _build_prompt(self, message: str, context: Optional[Dict[str, Any]]) -> str:
         recent = "\n".join(

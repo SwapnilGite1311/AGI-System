@@ -9,7 +9,6 @@ passwords), verifies by sending a test mail to yourself, and stores the
 config for the business agent's send_email capability.
 """
 
-import getpass
 import json
 import smtplib
 import sys
@@ -52,8 +51,11 @@ def main():
     server_in = input(f"SMTP server [{default_server}]: ").strip() or default_server
     port_in = input(f"SMTP port [{default_port}]: ").strip() or str(default_port)
 
-    print("App password (input hidden):")
-    password = getpass.getpass("> ").strip()
+    print("App password (visible so you can verify - paste with or without spaces):")
+    password = input("> ").strip().replace(" ", "")
+    if not password:
+        print("Password required.")
+        return 1
     if not password:
         print("Password required.")
         return 1

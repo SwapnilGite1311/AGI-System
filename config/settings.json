@@ -159,5 +159,12 @@
     "models": "./models",
     "cache": "./cache",
     "ollama": ""
+  },
+  "email": {
+    "configured": true,
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "email_address": "swapnilgite9028@gmail.com",
+    "password": "acpojempbnrwwdrr"
   }
 }

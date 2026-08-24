@@ -879,7 +879,20 @@ class BusinessAgent:
         priority: str = "normal"
     ) -> Dict[str, Any]:
         """Send an email notification with user-provided credentials."""
-        
+
+        # Defensive coercion: LLM planners often omit fields entirely, and
+        # MIMEText(None) crashes with 'NoneType' has no attribute 'encode'.
+        to_email = str(to_email or "").strip()
+        subject = str(subject or "").strip() or "(no subject)"
+        body = str(body or "").strip() or "(empty body)"
+
+        if "@" not in to_email:
+            return {
+                "success": False,
+                "error": f"Invalid recipient address: '{to_email or '(missing)'}'",
+                "message": "Say the full email address, e.g. 'send an email to name@gmail.com about ...'",
+            }
+
         email_config = self.config.get("email", {})
         
         # Check if email is configured
