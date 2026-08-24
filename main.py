@@ -480,8 +480,11 @@ class AutonomousSystemController:
                 if (
                     self.decompose_complex_tasks
                     and self.task_decomposer.should_decompose(command, complexity)
-                    and not (getattr(self, "autonomy", None) and self.autonomy.should_handle(command, complexity))
                 ):
+                    # Deterministic clause-splitting always gets first chance on
+                    # multi-action commands; autonomy/council remain fallbacks.
+                    # (Previously an autonomy veto skipped this and threw
+                    # every complex task into LLM planning.)
                     decomposition = self.task_decomposer.decompose(command)
 
                 if decomposition and decomposition.get("subtasks"):
