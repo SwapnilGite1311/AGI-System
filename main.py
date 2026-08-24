@@ -47,6 +47,7 @@ from core.chairman import Chairman
 from core.council import LLMCouncil
 from core.autonomy import AutonomyEngine
 from core.memory import MemorySystem
+from core.remote_queue import RemoteQueue
 from core.task_decomposer import TaskDecomposer
 from core.tool_registry import ToolRegistry, ToolSpec
 
@@ -3377,8 +3378,35 @@ class AutonomousSystemController:
         
         print("\nHow may I assist you today?\n")
 
+        remote_queue = RemoteQueue(Path(__file__).resolve().parent / "data" / "remote_queue.json")
+
         while self.running:
             try:
+                # Execute remotely-submitted tasks first so the supervisor sees
+                # them happen live on this laptop.
+                while True:
+                    remote_task = remote_queue.claim_next()
+                    if not remote_task:
+                        break
+                    print(f"\n[REMOTE {remote_task['source']} | {remote_task['sender']}] {remote_task['command']}")
+                    try:
+                        remote_result = await self.process_command(remote_task["command"])
+                        if remote_result.get("success"):
+                            remote_queue.mark_done(
+                                remote_task["id"],
+                                str(remote_result.get("response") or "Task completed successfully."),
+                            )
+                            print("[REMOTE] Done.")
+                        else:
+                            remote_queue.mark_failed(
+                                remote_task["id"],
+                                str(remote_result.get("error") or "Task failed."),
+                            )
+                            print(f"[REMOTE] Failed: {str(remote_result.get('error'))[:120]}")
+                    except Exception as exc:
+                        remote_queue.mark_failed(remote_task["id"], f"{type(exc).__name__}: {exc}")
+                        print(f"[REMOTE] Failed: {exc}")
+
                 command = input("You: ").strip()
 
                 if not command:
@@ -3620,4 +3648,21 @@ if __name__ == "__main__":
         from core.doctor import run as run_doctor
 
         sys.exit(run_doctor())
+    if "--journal" in sys.argv:
+        journal_path = Path(__file__).resolve().parent / "data" / "execution_journal.json"
+        try:
+            entries = json.loads(journal_path.read_text(encoding="utf-8"))
+        except Exception:
+            entries = []
+        tail = entries[-int(sys.argv[sys.argv.index("--journal") + 1]) if len(sys.argv) > sys.argv.index("--journal") + 1 else 15:]
+        print("=" * 60)
+        print(f"ASC EXECUTION JOURNAL - last {len(tail)} commands")
+        print("=" * 60)
+        for e in reversed(tail):
+            flag = "OK  " if e.get("success") else "FAIL"
+            steps = ", ".join(str(s.get("action", "?")) for s in e.get("steps", [])) or "-"
+            err = f"  [error: {e.get('error')}]" if e.get("error") else ""
+            print(f"[{flag}] {e.get('timestamp', '')}  {str(e.get('command'))[:60]}")
+            print(f"       tier={e.get('tier')} steps: {steps}{err}")
+        sys.exit(0)
     asyncio.run(main())
