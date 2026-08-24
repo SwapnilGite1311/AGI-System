@@ -1593,6 +1593,23 @@ class AutonomousSystemController:
         if env_var:
             return {"type": "environment_variable", "name": env_var.group("name").strip()}
 
+        # Vision: screen understanding and screenshots
+        if any(
+            phrase in normalized
+            for phrase in [
+                "what is on my screen", "what's on my screen", "whats on my screen",
+                "analyze my screen", "analyze the screen", "describe my screen",
+                "describe the screen", "read my screen", "what do you see",
+            ]
+        ):
+            return {"type": "screen_qa"}
+
+        if any(
+            phrase in normalized
+            for phrase in ["take a screenshot", "take screenshot", "capture my screen", "capture the screen", "grab a screenshot"]
+        ):
+            return {"type": "screenshot"}
+
         if ("list" in normalized or "show" in normalized) and any(
             word in normalized for word in ["process", "running task", "running app"]
         ):
@@ -2370,6 +2387,30 @@ class AutonomousSystemController:
             step_result = {
                 "success": True,
                 "drives": self.agents["system"].get_disk_usage_all_drives(),
+            }
+
+        elif intent_type == "screen_qa":
+            question = intent.get("question")
+            vision_result = await self.agents["vision"].understand_screen(question)
+            if vision_result.get("error"):
+                step_result = {"success": False, "error": str(vision_result["error"])}
+            else:
+                step_result = {"success": True, **vision_result}
+
+        elif intent_type == "screenshot":
+            shot = self.agents["vision"].capture_screen(save=True)
+            shot_path = None
+            try:
+                shots_dir = Path(self.config["paths"]["data"]) / "screenshots"
+                latest = sorted(shots_dir.glob("*.png"), key=lambda p: p.stat().st_mtime)
+                if latest:
+                    shot_path = str(latest[-1])
+            except Exception:
+                pass
+            step_result = {
+                "success": bool(shot),
+                "message": "Screenshot captured." if shot else "Screenshot failed.",
+                **({"path": shot_path} if shot_path else {}),
             }
 
         elif intent_type == "environment_variable":
