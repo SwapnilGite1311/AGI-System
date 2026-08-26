@@ -3500,6 +3500,28 @@ class AutonomousSystemController:
                                 str(remote_result.get("error") or "Task failed."),
                             )
                             print(f"[REMOTE] Failed: {str(remote_result.get('error'))[:120]}")
+
+                        # Email-sourced tasks get the result mailed back.
+                        if remote_task.get("source") == "email":
+                            try:
+                                summary = str(
+                                    remote_result.get("response")
+                                    or ("Done. " + "; ".join(
+                                        str(s.get("subtask_description") or s.get("action") or "")
+                                        for s in (remote_result.get("results") or []) if isinstance(s, dict)
+                                    ))
+                                    or remote_result.get("error")
+                                    or "Completed."
+                                )
+                                status_word = "completed" if remote_result.get("success") else "failed"
+                                self.agents["business"].send_email_notification(
+                                    to_email=remote_task.get("sender", ""),
+                                    subject=f"VEGA task {status_word}: {remote_task['command'][:60]}",
+                                    body=f"Your command: {remote_task['command']}\n\nStatus: {status_word}\n\nResult:\n{summary[:1000]}",
+                                )
+                                print(f"[REMOTE] Result emailed to {remote_task.get('sender')}")
+                            except Exception as mail_exc:
+                                print(f"[REMOTE] Reply email failed: {mail_exc}")
                     except Exception as exc:
                         remote_queue.mark_failed(remote_task["id"], f"{type(exc).__name__}: {exc}")
                         print(f"[REMOTE] Failed: {exc}")

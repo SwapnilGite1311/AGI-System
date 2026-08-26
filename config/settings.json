@@ -165,7 +165,13 @@
     "smtp_server": "smtp.gmail.com",
     "smtp_port": 587,
     "email_address": "swapnilgite9028@gmail.com",
-    "password": "acpojempbnrwwdrr"
+    "imap_server": "imap.gmail.com",
+    "imap_port": 993,
+    "subject_prefix": "VEGA:",
+    "check_interval_seconds": 20,
+    "allowed_senders": [
+      "swapnilgite9028@gmail.com"
+    ]
   },
   "conversation": {
     "model": "qwen2.5:3b",

@@ -34,6 +34,16 @@ class BusinessAgent:
         with open(config_path, "r", encoding="utf-8") as file:
             self.config = json.load(file)
 
+        # Merge secrets from gitignored credentials file so settings.json
+        # stays shareable while email still works.
+        try:
+            creds_path = self.project_root / "data" / "email_credentials.json"
+            if creds_path.exists():
+                creds = json.loads(creds_path.read_text(encoding="utf-8"))
+                self.config.setdefault("email", {}).update(creds)
+        except Exception as exc:
+            logger.warning("Email credentials merge skipped: {}", str(exc))
+
         self.data_path = self._data_file("business_tasks.json")
         self.data_path.parent.mkdir(parents=True, exist_ok=True)
 

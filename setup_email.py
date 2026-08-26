@@ -88,7 +88,10 @@ def main():
     config["email"]["smtp_server"] = server_in
     config["email"]["smtp_port"] = int(port_in)
     config["email"]["email_address"] = email
-    config["email"]["password"] = password
+    # Password stored OUTSIDE version control:
+    creds_path = CONFIG_PATH.parent.parent / "data" / "email_credentials.json"
+    creds_path.parent.mkdir(parents=True, exist_ok=True)
+    creds_path.write_text(json.dumps({"password": password}, indent=2), encoding="utf-8")
     CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     print("\n[DONE] Email configured. VEGA can now send email on your behalf.")
