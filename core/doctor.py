@@ -1,5 +1,5 @@
 """
-ASC Doctor - one-shot environment health check.
+VEGA Doctor - one-shot environment health check.
 
 Usage: python main.py --doctor
 Verifies config, Ollama, models, voice service, python deps,
@@ -142,7 +142,7 @@ def check_data_dirs():
 
 def run():
     print("=" * 60)
-    print("ASC DOCTOR - ENVIRONMENT HEALTH CHECK")
+    print("VEGA DOCTOR - ENVIRONMENT HEALTH CHECK")
     print("=" * 60)
 
     config = check_config()

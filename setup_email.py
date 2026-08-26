@@ -1,5 +1,5 @@
 """
-ASC Email Setup Wizard - one-time SMTP configuration.
+VEGA Email Setup Wizard - one-time SMTP configuration.
 
 Usage: python setup_email.py
 
@@ -35,7 +35,7 @@ def detect_smtp(email: str):
 
 def main():
     print("=" * 60)
-    print("ASC EMAIL SETUP")
+    print("VEGA EMAIL SETUP")
     print("=" * 60)
     print("\nYou need a MAIL APP PASSWORD (not your normal password).")
     print("Gmail: myaccount.google.com -> Security -> 2-Step Verification")
@@ -63,10 +63,10 @@ def main():
     print("\nSending verification email to yourself...")
     try:
         msg = MIMEText(
-            "ASC email setup successful! You can now command ASC to send emails.\n\n"
+            "VEGA email setup successful! You can now command VEGA to send emails.\n\n"
             "- Autonomous System Controller"
         )
-        msg["Subject"] = "ASC Email Setup - Success"
+        msg["Subject"] = "VEGA Email Setup - Success"
         msg["From"] = email
         msg["To"] = email
 
@@ -91,7 +91,7 @@ def main():
     config["email"]["password"] = password
     CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
-    print("\n[DONE] Email configured. ASC can now send email on your behalf.")
+    print("\n[DONE] Email configured. VEGA can now send email on your behalf.")
     print("Try: send an email to <address> about <subject>")
     return 0
 

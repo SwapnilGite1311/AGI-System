@@ -1,5 +1,5 @@
 """
-ASC Remote Gateway - receives commands from outside the laptop.
+VEGA Remote Gateway - receives commands from outside the laptop.
 
 Endpoints:
   GET  /health            -> service status
@@ -48,7 +48,7 @@ def _authorized() -> bool:
             token = (cfg.get("security") or {}).get("remote_token", "")
         except Exception:
             token = ""
-    supplied = request.args.get("token") or request.headers.get("X-ASC-Token", "")
+    supplied = request.args.get("token") or request.headers.get("X-VEGA-Token", "")
     return bool(token) and supplied == token
 
 
@@ -65,7 +65,7 @@ def _extract_whatsapp_message(payload: dict):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "asc-remote-gateway"})
+    return jsonify({"status": "ok", "service": "vega-remote-gateway"})
 
 
 @app.route("/hook/whatsapp", methods=["POST"])
@@ -108,5 +108,5 @@ def queue_view():
 
 if __name__ == "__main__":
     port = int(os.environ.get("REMOTE_GATEWAY_PORT", "5001"))
-    print(f"ASC Remote Gateway on http://localhost:{port}")
+    print(f"VEGA Remote Gateway on http://localhost:{port}")
     app.run(port=port)

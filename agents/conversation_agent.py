@@ -1,5 +1,5 @@
 """
-Conversation Agent - natural chat layer for ASC.
+Conversation Agent - natural chat layer for VEGA.
 
 This keeps ordinary conversation separate from tool execution, while still
 allowing local models to answer when Ollama is available.
@@ -61,7 +61,7 @@ class ConversationAgent:
         if any(re.search(p, normalized) for p in capability_patterns):
             return True
 
-        # User feedback/complaints about ASC's own behaviour must never be
+        # User feedback/complaints about VEGA's own behaviorur must never be
         # executed as commands ("you didn't opened chrome at all!").
         feedback_patterns = [
             r"^you (didn'?t|did not|don'?t|do not|never)\b",
@@ -180,11 +180,11 @@ class ConversationAgent:
 
     def _build_prompt(self, message: str, context: Optional[Dict[str, Any]]) -> str:
         recent = "\n".join(
-            f"User: {item['user']}\nASC: {item['assistant']}"
+            f"User: {item['user']}\nVEGA: {item['assistant']}"
             for item in self.history[-self.history_limit:]
         )
         capability_summary = self._capability_summary(context)
-        return f"""You are ASC, a local AI assistant inspired by Jarvis. Warm, intelligent, helpful.
+        return f"""You are VEGA, a local AI assistant. Warm, intelligent, helpful.
 
 STRICT RESPONSE RULES:
 - Reply in 1-3 short sentences maximum
@@ -200,7 +200,7 @@ Recent conversation:
 
 User: {message}
 
-ASC:"""
+VEGA:"""
 
     @staticmethod
     def _polish_response(text: str) -> str:
@@ -225,7 +225,7 @@ ASC:"""
         normalized = " ".join((message or "").lower().strip().split())
 
         if re.search(r"^(hi|hello|hey|yo|namaste)\b", normalized):
-            response = "Hello! I'm ASC, your local AI assistant. I'm here to help you with tasks, answer questions, or just have a conversation. What can I do for you today?"
+            response = "Hello! I'm VEGA, your local AI assistant. I'm here to help you with tasks, answer questions, or just have a conversation. What can I do for you today?"
         elif "how are you" in normalized:
             response = "I'm running optimally and ready to assist you. All my core systems are operational. How can I help you today?"
         elif "what can you do" in normalized or "capable" in normalized or "who are you" in normalized:
@@ -246,7 +246,7 @@ ASC:"""
 
     def _capability_response(self, context: Optional[Dict[str, Any]]) -> str:
         return (
-            "I am ASC, your advanced local AI assistant. I can engage in natural conversation, "
+            "I am VEGA, your advanced local AI assistant. I can engage in natural conversation, "
             "automate your desktop applications, execute system commands with safety checks, "
             "monitor system resources, manage your files intelligently, navigate and search the web, "
             "assist with form filling using OCR, learn from your preferences, and provide voice interaction. "

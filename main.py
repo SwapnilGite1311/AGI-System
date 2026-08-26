@@ -1,5 +1,5 @@
 """
-Autonomous System Controller (ASC) - Main Entry Point
+VEGA - Autonomous System Controller - Main Entry Point
 Implements direct execution, learning-assisted routing, intelligent form
 handling, and decomposed multi-step task execution.
 """
@@ -118,7 +118,7 @@ class _LazyAgents:
 
 
 class AutonomousSystemController:
-    """Main ASC controller and execution orchestrator."""
+    """Main VEGA controller and execution orchestrator."""
 
     BROWSER_APPS = {
         "browser",
@@ -471,7 +471,7 @@ class AutonomousSystemController:
         self._speak_text(message)
 
     async def process_command(self, command: str) -> Dict[str, Any]:
-        """Process a natural-language command through ASC with graceful error handling."""
+        """Process a natural-language command through VEGA with graceful error handling."""
 
         logger.info("Processing command: {}", command[:100])
         command = self._resolve_pending_clarification(command)
@@ -1814,7 +1814,7 @@ class AutonomousSystemController:
                 "command": "",
                 "description": "unlock the system",
                 "shell": "cmd",
-                "unsupported_reason": "Unlocking must use the operating system's secure authentication flow; ASC should not store, type, or bypass passwords.",
+                "unsupported_reason": "Unlocking must use the operating system's secure authentication flow; VEGA should not store, type, or bypass passwords.",
             }
         return None
 
@@ -2750,7 +2750,7 @@ class AutonomousSystemController:
         return fallback.get("subtasks", [])
 
     def _normalize_plan_step(self, raw_step: Any, index: int, original_command: str) -> Optional[Dict[str, Any]]:
-        """Normalize one LLM/council step into ASC's routed action format."""
+        """Normalize one LLM/council step into VEGA's routed action format."""
 
         if isinstance(raw_step, dict):
             description = str(
@@ -3397,7 +3397,7 @@ class AutonomousSystemController:
     def _build_report_content(self, command: str, prior_results: List[Dict[str, Any]]) -> str:
         """Build a simple text report from prior subtask results."""
 
-        lines = [f"ASC Report", f"Original task: {command}", ""]
+        lines = [f"VEGA Report", f"Original task: {command}", ""]
 
         for index, result in enumerate(prior_results, start=1):
             lines.append(f"Step {index}: {result.get('subtask_description', 'Unnamed step')}")
@@ -3455,14 +3455,14 @@ class AutonomousSystemController:
         }
 
     async def run_interactive(self):
-        """Run ASC in interactive mode with Jarvis-like presentation."""
+        """Run VEGA in interactive mode with cinematic presentation."""
 
         self.running = True
 
         print("\n" + "=" * 60)
         print("AUTONOMOUS SYSTEM CONTROLLER")
         print("=" * 60)
-        print("\nGreetings. I am ASC, your advanced local AI assistant.")
+        print("\nGreetings. I am VEGA, your advanced local AI assistant.")
         print("I'm here to help you with tasks, answer questions, and assist with your work.")
         
         if self.voice_enabled and self.voice_service_available:
@@ -3546,7 +3546,7 @@ class AutonomousSystemController:
                 print("Let me try to help you with something else.\n")
 
     def _display_capabilities(self):
-        """Display available capabilities in a Jarvis-like format."""
+        """Display available capabilities in a clean format."""
         print("\n" + "=" * 60)
         print("CAPABILITIES")
         print("=" * 60)
@@ -3579,20 +3579,20 @@ class AutonomousSystemController:
         print("\n" + "=" * 60 + "\n")
 
     def _display_result(self, result: Dict[str, Any]):
-        """Render command results with Jarvis-like sophistication."""
+        """Render command results with polished presentation."""
 
         if result.get("tier") == "conversation" or result.get("mode") == "chat":
             response = result.get("response")
             if response:
-                print(f"\nASC: {response}\n")
+                print(f"\nVEGA: {response}\n")
             elif result.get("success"):
-                print("\nASC: I'm ready to assist you. What would you like me to help with?\n")
+                print("\nVEGA: I'm ready to assist you. What would you like me to help with?\n")
             else:
-                print(f"\nASC: I'm having some difficulty with that request. {result.get('error', '')}\n")
+                print(f"\nVEGA: I'm having some difficulty with that request. {result.get('error', '')}\n")
             return
 
         if result.get("needs_confirmation"):
-            print(f"\nASC: {result.get('question', 'This action requires your confirmation before I proceed.')}")
+            print(f"\nVEGA: {result.get('question', 'This action requires your confirmation before I proceed.')}")
             for step_result in result.get("results", []):
                 if step_result.get("warning"):
                     print(f"Note: {step_result['warning']}")
@@ -3602,7 +3602,7 @@ class AutonomousSystemController:
             return
 
         if result.get("needs_clarification"):
-            print(f"\nASC: {result.get('question', 'I need to clarify something to help you better.')}")
+            print(f"\nVEGA: {result.get('question', 'I need to clarify something to help you better.')}")
             suggestions = result.get("suggestions") or []
             if suggestions:
                 print("Suggestions:")
@@ -3612,7 +3612,7 @@ class AutonomousSystemController:
             return
 
         if result.get("success"):
-            # Jarvis-like success response
+            # Cinematic success response
             tier = result.get("tier", "unknown")
             steps_completed = result.get("steps_completed", 1)
             steps_total = result.get("steps_total", 1)
@@ -3626,13 +3626,13 @@ class AutonomousSystemController:
             else:
                 print(f"\nSuccess. I've processed your request through the {tier} tier.")
 
-            # Detailed results with Jarvis-like explanations
+            # Detailed results with polished explanations
             for step_result in result.get("results", []):
                 self._display_step_result(step_result)
 
             print()
         else:
-            # Jarvis-like error handling
+            # Graceful error handling
             error = result.get("error", "Unknown error")
             recovery = result.get("recovery_suggestion", "")
             
@@ -3759,7 +3759,7 @@ if __name__ == "__main__":
             entries = []
         tail = entries[-int(sys.argv[sys.argv.index("--journal") + 1]) if len(sys.argv) > sys.argv.index("--journal") + 1 else 15:]
         print("=" * 60)
-        print(f"ASC EXECUTION JOURNAL - last {len(tail)} commands")
+        print(f"VEGA EXECUTION JOURNAL - last {len(tail)} commands")
         print("=" * 60)
         for e in reversed(tail):
             flag = "OK  " if e.get("success") else "FAIL"
