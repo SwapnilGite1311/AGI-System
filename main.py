@@ -442,14 +442,32 @@ class AutonomousSystemController:
         return None
 
     def _speak_result(self, result: Dict[str, Any]):
-        """Speak back a simple result summary."""
+        """Speak the actual response content, not a generic summary."""
         if not self.voice_enabled or not self.voice_service_available:
             return
 
-        if result.get("success"):
-            message = f"Command completed successfully. {result.get('steps_completed', 0)} of {result.get('steps_total', 0)} steps succeeded."
+        response = str(result.get("response") or "").strip()
+        if response:
+            message = response
+        elif result.get("success"):
+            steps = [
+                str(
+                    s.get("subtask_description")
+                    or s.get("message")
+                    or s.get("action")
+                    or ""
+                ).strip()
+                for s in (result.get("results") or [])
+                if isinstance(s, dict)
+            ]
+            parts = [p for p in steps if p][:3]
+            message = "Done. " + "; ".join(parts) if parts else "Task completed successfully."
         else:
-            message = f"Command failed. {result.get('error', 'Unknown error')}"
+            message = f"Sorry, that failed. {str(result.get('error') or 'Unknown error')[:140]}"
+
+        if len(message) > 300:
+            message = message[:297] + "..."
+
         self._speak_text(message)
 
     async def process_command(self, command: str) -> Dict[str, Any]:
