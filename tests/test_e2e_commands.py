@@ -256,6 +256,90 @@ class TestConversationCommands:
 
 
 # ---------------------------------------------------------------------------
+# B-1 (Bon): BRAIN TIER cases - natural phrasing that legacy regex could not
+# parse. Each must route through process_command and report an HONEST outcome.
+# ---------------------------------------------------------------------------
+
+class TestBrainTierCommands:
+    def test_brain_create_file_with_content(self, controller, tmp_path):
+        """Creative compound file command must actually create bt.txt with 'hi'."""
+        target_name = "bt.txt"
+        expect_success(
+            controller,
+            f"create a file named {target_name} with content hi",
+            tmp_cwd=str(tmp_path),
+        )
+        created = tmp_path / target_name
+        assert created.exists(), (
+            "brain-tier create-file reported success but file missing on disk"
+        )
+        content = created.read_text(encoding="utf-8", errors="replace").strip().lower()
+        assert "hi" in content, (
+            f"file created but content wrong: {content!r}"
+        )
+
+    def test_brain_shopping_suggestion(self, controller):
+        """/shopping-style natural request must succeed honestly or ask to
+        clarify - never silently fake success with an empty payload."""
+        if os.environ.get("E2E_SKIP_NETWORK"):
+            pytest.skip("network-dependent case skipped")
+        result, elapsed = run_command(controller, "suggest me laptops under 80000")
+        record("suggest me laptops under 80000", True, result, elapsed)
+        tier = result.get("tier")
+        assert result is not None and tier is not None, (
+            "no routing decision recorded for shopping suggestion"
+        )
+        if tier == "clarify":
+            assert result.get("success") is True and result.get("response"), (
+                "clarify path returned without a question"
+            )
+        else:
+            assert result.get("success") is True, (
+                f"shopping suggestion failed honestly (tier={tier}, "
+                f"error={result.get('error')})"
+            )
+            payload = json.dumps(result.get("results") or result.get("response") or "")
+            assert len(payload) > 20, "suspiciously empty result payload"
+
+    def test_brain_casual_greeting(self, controller):
+        """Casual greeting must land in chat (conversation/clarify), not tools."""
+        result = expect_success(controller, "hey there how are you today?")
+        assert result.get("tier") in {"conversation", "clarify", "direct"}, (
+            f"greeting routed to unexpected tier {result.get('tier')!r}"
+        )
+        assert (result.get("response") or "").strip(), "greeting got an empty reply"
+
+    def test_brain_nonsense_gets_no_task_created(self, controller):
+        """Pure gibberish must be politely clarified/chatted away - it must
+        NEVER be planned into a junk task or executed as a tool action."""
+        tasks_before = self._task_count()
+        result, elapsed = run_command(controller, "flurbick wibble wobble")
+        entry = record("flurbick wibble wobble", True, result, elapsed)
+        assert result is not None, "gibberish command returned None"
+        # Honest outcome: clarify question or a chat reply. NOT silent tool work.
+        assert entry["tier"] in {"clarify", "conversation", None}, (
+            f"gibberish executed on unexpected tier {entry['tier']!r}"
+        )
+        if entry["tier"] == "clarify":
+            assert result.get("response"), "clarify without a question text"
+        tasks_after = self._task_count()
+        assert tasks_after == tasks_before, (
+            f"junk task creation detected: {tasks_before} -> {tasks_after} tasks"
+        )
+
+    @staticmethod
+    def _task_count() -> int:
+        try:
+            data = json.loads(
+                (PROJECT_ROOT / "data" / "business_tasks.json").read_text(encoding="utf-8")
+            )
+            items = data.get("tasks", data) if isinstance(data, dict) else data
+            return len(items) if isinstance(items, list) else 0
+        except Exception:
+            return 0
+
+
+# ---------------------------------------------------------------------------
 # Final aggregate: at least 90% of the top-20 commands must behave as expected.
 # A single flaky command fails its own test above; this guards systemic rot.
 # ---------------------------------------------------------------------------
