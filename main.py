@@ -48,6 +48,7 @@ from core.council import LLMCouncil
 from core.autonomy import AutonomyEngine
 from core.memory import MemorySystem
 from core.remote_queue import RemoteQueue
+from core.intent_router import LLMIntentRouter
 from core.task_decomposer import TaskDecomposer
 from core.tool_registry import ToolRegistry, ToolSpec
 
@@ -149,6 +150,7 @@ class AutonomousSystemController:
         self.memory = MemorySystem(config_path)
         self.task_decomposer = TaskDecomposer()
         self.autonomy = AutonomyEngine(self.task_decomposer, self.get_tool_manifest)
+        self.intent_router = LLMIntentRouter(self.config, self.get_tool_manifest)
 
         logger.info("Initializing agents...")
         conversation_agent = ConversationAgent(config_path)
@@ -548,7 +550,32 @@ class AutonomousSystemController:
             tier = strategy["tier"]
             complexity = strategy["complexity"]
 
-            if tier == "conversation":
+            if tier == "brain":
+                self.tier_stats["direct"] += 1
+                intent = strategy.get("intent") or {}
+                step = await self._route_action(
+                    intent.get("type", ""), strategy.get("params") or {}, command
+                )
+                result = {
+                    "tier": "brain",
+                    "success": bool(step.get("success")),
+                    "results": [step],
+                    "response": str(
+                        step.get("message")
+                        or step.get("subtask_description")
+                        or ("Done." if step.get("success") else "")
+                    ),
+                }
+                if not step.get("success") and step.get("error"):
+                    result["error"] = str(step.get("error"))
+
+            elif tier == "clarify":
+                result = {
+                    "success": True,
+                    "response": strategy.get("question", "Could you rephrase that?"),
+                }
+
+            elif tier == "conversation":
                 result = await self.agents["conversation"].chat(
                     command,
                     context={"tools": self.get_tool_manifest()},
@@ -842,6 +869,35 @@ class AutonomousSystemController:
         conversation_agent = self.agents.get("conversation")
         if conversation_agent and conversation_agent.is_conversation(command):
             return {"tier": "conversation", "complexity": "simple", "source": "conversation"}
+
+        # BRAIN TIER: one LLM call understands intent against the tool
+        # manifest. Replaces phrase-matching for everything non-instant.
+        if getattr(self, "intent_router", None):
+            try:
+                decision = self.intent_router.decide(command)
+            except Exception as exc:
+                logger.warning("IntentRouter error: {}", str(exc)[:100])
+                decision = None
+            if decision:
+                action = decision.get("action")
+                if action == "chat":
+                    return {"tier": "conversation", "complexity": "simple", "source": "brain"}
+                if action == "clarify":
+                    return {
+                        "tier": "clarify",
+                        "complexity": "simple",
+                        "question": (decision.get("params") or {}).get(
+                            "question", "Could you rephrase that for me?"
+                        ),
+                        "source": "brain",
+                    }
+                return {
+                    "tier": "brain",
+                    "complexity": "simple",
+                    "source": "brain",
+                    "intent": {"type": action},
+                    "params": decision.get("params", {}),
+                }
 
         # Nonsense gate: commands with no action verbs, no digits, and no
         # question mark are almost certainly gibberish or chat - never plan
@@ -3123,16 +3179,38 @@ class AutonomousSystemController:
 
         return await self._execute_general_action(context, params)
 
+    @staticmethod
+    def _derive_filename(text: str) -> str:
+        """Pull a plausible filename out of a natural phrase."""
+        text = " ".join((text or "").strip().split())
+        match = re.search(r"named\s+([a-zA-Z0-9_\-. ]+?)(?:\s+with\s+content\s+.*)?$", text, re.IGNORECASE)
+        name = match.group(1).strip() if match else re.sub(r"[^a-zA-Z0-9_\- ]", "", text)[:32].strip()
+        if not name:
+            name = "vega_file"
+        name = name.replace(" ", "_")
+        if "." not in name:
+            name += ".txt"
+        return name
+
     def _execute_file_action(self, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute file-related actions."""
 
         file_agent = self.agents["file"]
 
+        # Normalize generic brain actions: bare "file"/"file_ops" with content
+        # means create; without content it means list.
+        if action_type in ("file", "file_ops"):
+            if params.get("content") is not None:
+                action_type = "create_file"
+            else:
+                action_type = "list_files"
+
         if action_type == "create_folder":
             return file_agent.create_folder(params.get("path", "./new_folder"))
 
-        if action_type == "create_file":
-            return file_agent.create_file(params.get("path", "./new_file.txt"), params.get("content", ""))
+        if action_type in ("create_file",):
+            path = params.get("path") or self._derive_filename(params.get("description") or params.get("context") or "vega_note.txt")
+            return file_agent.create_file(path, params.get("content", ""))
 
         if "organize" in action_type:
             path = params.get("path") or self._extract_known_path(params.get("description", "desktop"))
@@ -3266,6 +3344,10 @@ class AutonomousSystemController:
             "default_browser", "chrome"
         )
 
+        # Normalize generic brain actions: bare "web" means search.
+        if action_type == "web":
+            action_type = "search"
+
         if action_type == "extract_text" or params.get("extract_text"):
             return await web_agent.extract_text_from_page()
 
@@ -3278,8 +3360,15 @@ class AutonomousSystemController:
             )
 
         if "search" in action_type:
-            target = params.get("query") or params.get("target") or params.get("description", "")
-            return await web_agent.perform_browser_action(browser_name, "search", target)
+            target = (
+                params.get("query")
+                or params.get("target")
+                or params.get("description")
+                or params.get("context", "")
+            )
+            if not target:
+                return {"success": False, "error": "Search query missing."}
+            return await web_agent.perform_browser_action(browser_name, "search", str(target).strip())
 
         if "navigate" in action_type or "browser" in action_type or "web" in action_type:
             target = params.get("url") or params.get("target")
@@ -3328,9 +3417,6 @@ class AutonomousSystemController:
                 "Try a more specific command."
             ),
         }
-
-    def _execute_file_action(self, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute file-related actions."""
 
     def _cache_command_strategy(self, command: str, strategy: Dict[str, Any], result: Dict[str, Any]):
         """Cache successful routing decisions."""

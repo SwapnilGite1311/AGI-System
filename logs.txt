@@ -1,0 +1,201 @@
+PS C:\Users\Swapnil gite\LAN\PROJECTS\Agentic Web\AGI-System> python email_listener.py
+Traceback (most recent call last):
+  File "C:\Users\Swapnil gite\LAN\PROJECTS\Agentic Web\AGI-System\email_listener.py", line 116, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Swapnil gite\LAN\PROJECTS\Agentic Web\AGI-System\email_listener.py", line 98, in main
+    cfg = load_config()
+  File "C:\Users\Swapnil gite\LAN\PROJECTS\Agentic Web\AGI-System\email_listener.py", line 39, in load_config
+    "password": email_cfg["password"],
+                ~~~~~~~~~^^^^^^^^^^^^
+KeyError: 'password'
+PS C:\Users\Swapnil gite\LAN\PROJECTS\Agentic Web\AGI-System> python main.py
+10:14:12 | INFO     | ============================================================
+10:14:12 | INFO     | AUTONOMOUS SYSTEM CONTROLLER v1.0
+10:14:12 | INFO     | ============================================================
+10:14:12 | INFO     | Initializing core systems...
+10:14:13 | INFO     | Optimized LLM Council initialized (sequential loading)
+10:14:14 | INFO     | Chairman initialized with model: qwen2.5:3b
+10:14:14 | INFO     | 🧠 Memory system initialized (enhanced)
+10:14:14 | INFO     | Initializing agents...
+10:14:14 | INFO     | Conversation Agent initialized
+10:14:14 | INFO     | System Agent initialized (enhanced)
+10:14:14 | INFO     | Checking Ollama status...
+10:14:14 | INFO     | Ollama is already running
+10:14:14 | INFO     | Learning Agent initialized
+10:14:16 | INFO     | Pruned old/excess sessions
+10:14:16 | INFO     | Session started: session_20260826_101416
+10:14:16 | SUCCESS  | All systems initialized
+10:14:16 | INFO     | ============================================================
+
+============================================================
+AUTONOMOUS SYSTEM CONTROLLER
+============================================================
+
+Greetings. I am VEGA, your advanced local AI assistant.
+I'm here to help you with tasks, answer questions, and assist with your work.
+
+Voice control is active. Type 'voice' to speak a command, or type your command normally.
+
+How may I assist you today?
+
+You: voice
+10:14:20 | INFO     | Voice: using input device #1 (Microphone Array (Realtek(R) Au)
+Listening (speak, then pause)...
+10:14:20 | ERROR    | Voice recording failed: 'AutonomousSystemController' object has no attribute '_rms_energy'
+Voice recording failed.
+You: voice
+10:14:25 | INFO     | Voice: using input device #1 (Microphone Array (Realtek(R) Au)
+Listening (speak, then pause)...
+10:14:25 | ERROR    | Voice recording failed: 'AutonomousSystemController' object has no attribute '_rms_energy'
+Voice recording failed.
+You: voice
+10:14:27 | INFO     | Voice: using input device #1 (Microphone Array (Realtek(R) Au)
+Listening (speak, then pause)...
+10:14:27 | ERROR    | Voice recording failed: 'AutonomousSystemController' object has no attribute '_rms_energy'
+Voice recording failed.
+You: hi there how are you today?
+10:15:08 | INFO     | Processing command: hi there how are you today?
+10:15:59 | INFO     | 📝 Episode recorded: hi there how are you today? -> success
+
+VEGA: Hello! Here to help. How can I assist you today?
+
+You: hey what's your name?
+10:16:18 | INFO     | Processing command: hey what's your name?
+10:16:27 | INFO     | 📝 Episode recorded: hey what's your name? -> success
+
+VEGA: Hey there! My name is VEGA. How can I assist you?
+
+You: can you show me the system info?
+10:18:39 | INFO     | Processing command: can you show me the system info?
+10:18:40 | INFO     | 📝 Episode recorded: can you show me the system info? -> success
+
+Excellent. Task completed successfully via direct execution.
+
+System Status:
+  CPU: 4.8% (16 cores)
+  RAM: 85.1% used (1.1GB free)
+  Disk: 85.2% used (61.79GB free)
+
+You: which disk drives are present on this device?
+10:19:28 | INFO     | Processing command: which disk drives are present on this device?
+10:19:28 | INFO     | 📝 Episode recorded: which disk drives are present on this device? -> success
+
+Excellent. Task completed successfully via direct execution.
+
+You: disk drives
+10:19:39 | INFO     | Processing command: disk drives
+10:19:39 | INFO     | 📝 Episode recorded: disk drives -> success
+
+Excellent. Task completed successfully via direct execution.
+
+You: list out the running processes
+10:20:15 | INFO     | Processing command: list out the running processes
+10:20:15 | INFO     | 📝 Episode recorded: list out the running processes -> success
+
+Excellent. Task completed successfully via direct execution.
+
+System Processes:
+  - System Idle Process (PID: 0, CPU: 0.0%)
+  - System (PID: 4, CPU: 0.0%)
+  -  (PID: 236, CPU: 0.0%)
+  - Registry (PID: 280, CPU: 0.0%)
+  - ArmourySocketServer.exe (PID: 424, CPU: 0.0%)
+  - smss.exe (PID: 932, CPU: 0.0%)
+  - svchost.exe (PID: 1172, CPU: 0.0%)
+  - svchost.exe (PID: 1180, CPU: 0.0%)
+  - OpenConsole.exe (PID: 1488, CPU: 0.0%)
+  - csrss.exe (PID: 1496, CPU: 0.0%)
+
+You: create a file named vega.txt with content hello world and tell few things about yourself in that file
+10:28:25 | INFO     | Processing command: create a file named vega.txt with content hello world and tell few things about yourself in that fil
+10:28:25 | INFO     | 📁 File Agent initialized (enhanced)
+10:28:25 | INFO     | Lazy-loaded agent: file
+10:28:25 | SUCCESS  | ✅ Created file: C:\Users\Swapnil gite\LAN\PROJECTS\Agentic Web\AGI-System\vega.txt with content hello world and tell few things about yourself in that file
+10:28:40 | INFO     | 📝 Episode recorded: create a file named vega.txt with content hello world and tell few things about yourself in that file -> success
+
+Excellent. Task completed successfully via direct execution.
+
+You: i think you got the wrong idea i told you to create a file named vega.txt and add text to it saying hello world and telling about yourself
+10:29:22 | INFO     | Processing command: i think you got the wrong idea i told you to create a file named vega.txt and add text to it saying 
+10:29:22 | INFO     | 📝 Episode recorded: i think you got the wrong idea i told you to create a file named vega.txt and add text to it saying hello world and telling about yourself -> failure
+
+I encountered an issue: Autonomy engine could not produce an executable plan.
+
+Would you like me to try a different approach, or would you prefer to work on something else?
+
+You: search files named ASC_test.txt
+10:30:29 | INFO     | Processing command: search files named ASC_test.txt
+10:30:29 | INFO     | Vision Agent initialized
+10:30:29 | INFO     | Lazy-loaded agent: vision
+10:30:30 | INFO     | Web Agent initialized
+10:30:30 | INFO     | Lazy-loaded agent: web
+10:30:30 | INFO     | Using Playwright browser cache: C:\ms-playwright
+10:30:33 | INFO     | Playwright browser started: chromium (headless=False)
+10:30:37 | INFO     | 📝 Episode recorded: search files named ASC_test.txt -> success
+
+Excellent. Task completed successfully via direct execution.
+  Searched for 'files named asc_test.txt' in chrome
+  Opened: https://www.google.com/search?q=files+named+asc_test.txt
+
+You: search files for vega_test
+10:30:56 | INFO     | Processing command: search files for vega_test
+10:30:56 | WARNING  | Playwright navigation failed: Page.goto: Target page, context or browser has been closed
+10:30:56 | SUCCESS  | Opened: chrome (PID: 3456)
+10:31:01 | INFO     | 📝 Episode recorded: search files for vega_test -> success
+
+Excellent. Task completed successfully via direct execution.
+  Searched for 'files for vega_test' in chrome
+  Opened: https://www.google.com/search?q=files+for+vega_test
+
+You: open notepad
+10:31:30 | INFO     | Processing command: open notepad
+10:31:30 | SUCCESS  | Opened: notepad (PID: 16676)
+10:31:31 | INFO     | 📝 Episode recorded: open notepad -> success
+
+Excellent. Task completed successfully via direct execution.
+
+You: create task buy groceries evening
+10:35:36 | INFO     | Processing command: create task buy groceries evening
+10:35:36 | INFO     | Business Agent initialized
+10:35:36 | INFO     | Lazy-loaded agent: business
+10:35:49 | INFO     | 📝 Episode recorded: create task buy groceries evening -> success
+
+Excellent. Task completed successfully via direct execution.
+  Task 'New Task' created successfully
+
+You: send email to swapnilgite1311@gmail.com
+10:36:08 | INFO     | Processing command: send email to swapnilgite1311@gmail.com
+10:36:08 | INFO     | 📝 Episode recorded: send email to swapnilgite1311@gmail.com -> failure
+
+I encountered an issue: Invalid recipient address: '(missing)'
+
+Would you like me to try a different approach, or would you prefer to work on something else?
+
+You: take a screenshot
+10:36:55 | INFO     | Processing command: take a screenshot
+10:36:56 | INFO     | 📝 Episode recorded: take a screenshot -> success
+
+Excellent. Task completed successfully via direct execution.
+  Screenshot captured.
+
+You: where did you saved the screenshot
+10:37:22 | INFO     | Processing command: where did you saved the screenshot
+10:37:54 | INFO     | 📝 Episode recorded: where did you saved the screenshot -> success
+
+VEGA: I saved it locally. Can I assist you with something else?
+
+You: give me the path for the folder where you saved the screenshot
+10:39:22 | INFO     | Processing command: give me the path for the folder where you saved the screenshot
+10:39:32 | INFO     | 📝 Episode recorded: give me the path for the folder where you saved the screenshot -> success
+
+VEGA: The screenshot was saved locally. Can I assist you with anything else?
+
+You: whats on my screen?
+10:40:28 | INFO     | Processing command: whats on my screen?
+10:40:28 | INFO     | Analyzing screen with vision model...
+10:42:19 | INFO     | 📝 Episode recorded: whats on my screen? -> success
+
+Excellent. Task completed successfully via direct execution.
+
+You: 
