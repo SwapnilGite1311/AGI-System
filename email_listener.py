@@ -31,7 +31,14 @@ QUEUE_PATH = ROOT / "data" / "remote_queue.json"
 def load_config():
     cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
     email_cfg = cfg.get("email", {})
-    if not email_cfg.get("configured"):
+    # Merge gitignored credentials (password lives outside tracked config).
+    creds_path = ROOT / "data" / "email_credentials.json"
+    if creds_path.exists():
+        try:
+            email_cfg.update(json.loads(creds_path.read_text(encoding="utf-8")))
+        except Exception as exc:
+            print(f"[Email] credential merge failed: {exc}")
+    if not email_cfg.get("configured") or not email_cfg.get("password"):
         print("[Email] Not configured - run setup_email.py first.")
         sys.exit(1)
     return {
