@@ -151,6 +151,7 @@ class AutonomousSystemController:
         self.task_decomposer = TaskDecomposer()
         self.autonomy = AutonomyEngine(self.task_decomposer, self.get_tool_manifest)
         self.intent_router = LLMIntentRouter(self.config, self.get_tool_manifest)
+        self._last_execution_summary = ""
 
         logger.info("Initializing agents...")
         conversation_agent = ConversationAgent(config_path)
@@ -551,23 +552,62 @@ class AutonomousSystemController:
             complexity = strategy["complexity"]
 
             if tier == "brain":
-                self.tier_stats["direct"] += 1
-                intent = strategy.get("intent") or {}
-                step = await self._route_action(
-                    intent.get("type", ""), strategy.get("params") or {}, command
-                )
-                result = {
-                    "tier": "brain",
-                    "success": bool(step.get("success")),
-                    "results": [step],
-                    "response": str(
-                        step.get("message")
-                        or step.get("subtask_description")
-                        or ("Done." if step.get("success") else "")
-                    ),
-                }
-                if not step.get("success") and step.get("error"):
-                    result["error"] = str(step.get("error"))
+                self.tier_stats["brain"] = self.tier_stats.get("brain", 0) + 1
+                plan_steps = strategy.get("plan")
+                results = []
+                if plan_steps:
+                    for idx, step_def in enumerate(plan_steps, start=1):
+                        action_name = str(step_def.get("action", "")).strip()
+                        print(f"[Brain] Step {idx}/{len(plan_steps)}: {action_name}")
+                        try:
+                            step_res = await self._route_action(
+                                action_name, step_def.get("params") or {}, command
+                            )
+                        except Exception as exc:
+                            step_res = {"success": False, "error": str(exc)}
+                        results.append(step_res)
+                        if not step_res.get("success", True):
+                            break
+                    ok_count = sum(
+                        1 for s in results if isinstance(s, dict) and s.get("success")
+                    )
+                    success = bool(results) and ok_count == len(results)
+                    response_text = "; ".join(
+                        p
+                        for p in (
+                            str(s.get("subtask_description") or s.get("message") or s.get("action") or "")
+                            for s in results
+                            if isinstance(s, dict)
+                        )
+                        if p
+                    )
+                    result = {
+                        "tier": "brain",
+                        "success": success,
+                        "results": results,
+                        "steps_completed": ok_count,
+                        "steps_total": len(results),
+                        "response": response_text or ("Plan completed." if success else "Plan failed."),
+                    }
+                    if not success and isinstance(results[-1], dict) and results[-1].get("error"):
+                        result["error"] = str(results[-1]["error"])
+                else:
+                    intent = strategy.get("intent") or {}
+                    step = await self._route_action(
+                        intent.get("type", ""), strategy.get("params") or {}, command
+                    )
+                    result = {
+                        "tier": "brain",
+                        "success": bool(step.get("success")),
+                        "results": [step],
+                        "response": str(
+                            step.get("message")
+                            or step.get("subtask_description")
+                            or ("Done." if step.get("success") else "")
+                        ),
+                    }
+                    if not step.get("success") and step.get("error"):
+                        result["error"] = str(step.get("error"))
 
             elif tier == "clarify":
                 result = {
@@ -666,6 +706,22 @@ class AutonomousSystemController:
                         else:
                             result = await self._execute_plan(plan, command)
                             result["tier"] = tier
+
+            # Remember what we just did so follow-ups ("email that to raj")
+            # can resolve pronouns against the last result.
+            try:
+                summary_bits = []
+                resp_text = str(result.get("response") or "").strip()
+                if resp_text:
+                    summary_bits.append(resp_text[:200])
+                for s in (result.get("results") or [])[:3]:
+                    if isinstance(s, dict):
+                        d = str(s.get("subtask_description") or s.get("message") or s.get("action") or "").strip()
+                        if d:
+                            summary_bits.append(d[:120])
+                self._last_execution_summary = " | ".join(summary_bits)[:600]
+            except Exception:
+                self._last_execution_summary = ""
 
             self._cache_command_strategy(command, strategy, result)
             self._record_learning(command, strategy, result)
@@ -874,11 +930,22 @@ class AutonomousSystemController:
         # manifest. Replaces phrase-matching for everything non-instant.
         if getattr(self, "intent_router", None):
             try:
-                decision = self.intent_router.decide(command)
+                decision = self.intent_router.decide(
+                    command,
+                    context=getattr(self, "_last_execution_summary", "") or None,
+                )
             except Exception as exc:
                 logger.warning("IntentRouter error: {}", str(exc)[:100])
                 decision = None
             if decision:
+                plan_steps = decision.get("plan")
+                if plan_steps:
+                    return {
+                        "tier": "brain",
+                        "complexity": "complex",
+                        "source": "brain",
+                        "plan": plan_steps,
+                    }
                 action = decision.get("action")
                 if action == "chat":
                     return {"tier": "conversation", "complexity": "simple", "source": "brain"}
@@ -3937,5 +4004,23 @@ if __name__ == "__main__":
             err = f"  [error: {e.get('error')}]" if e.get("error") else ""
             print(f"[{flag}] {e.get('timestamp', '')}  {str(e.get('command'))[:60]}")
             print(f"       tier={e.get('tier')} steps: {steps}{err}")
+        sys.exit(0)
+    if "--reminders" in sys.argv:
+        # D-2 / task #19: background reminder loop, only when flag present.
+        from core.reminders import ReminderLoop
+
+        async def _run_with_reminders():
+            asc = AutonomousSystemController()
+            reminder_loop = ReminderLoop(
+                schedules_path=Path(__file__).resolve().parent / "data" / "schedules.json",
+                speak=asc._speak_text,
+            )
+            reminder_task = asyncio.create_task(reminder_loop.run())
+            try:
+                await asc.run_interactive()
+            finally:
+                reminder_task.cancel()
+
+        asyncio.run(_run_with_reminders())
         sys.exit(0)
     asyncio.run(main())
