@@ -292,6 +292,15 @@ class AutonomousSystemController:
                 best_idx = i
         return best_idx
 
+    @staticmethod
+    def _rms_energy(pcm_data: bytes) -> float:
+        """Root-mean-square energy of 16-bit little-endian PCM frames."""
+        count = len(pcm_data) // 2
+        if not count:
+            return 0.0
+        samples = struct.unpack(f"<{count}h", pcm_data[: count * 2])
+        return (sum(s * s for s in samples) / count) ** 0.5
+
     def _record_audio(
         self,
         duration: int = 10,
@@ -384,9 +393,36 @@ class AutonomousSystemController:
             logger.error("Voice transcription failed: {}", str(exc))
         return None
 
+    _tts_engine = None
+
     def _speak_text(self, text: str):
-        """Send text to the local voice server and play the returned WAV."""
+        """Speak text aloud.
+
+        Primary: Windows SAPI via pyttsx3 - instant, never truncates.
+        Fallback: piper TTS through the voice server (higher quality,
+        slower, requires local-server running).
+        """
         if not self.voice_enabled:
+            return
+
+        # --- Tier 1: pyttsx3 (offline SAPI) ---
+        try:
+            import pyttsx3
+
+            if AutonomousSystemController._tts_engine is None:
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 170)
+                AutonomousSystemController._tts_engine = engine
+            engine = AutonomousSystemController._tts_engine
+            engine.say(text)
+            engine.runAndWait()
+            return
+        except Exception as exc:
+            logger.warning("SAPI speech unavailable ({}), trying piper.", str(exc)[:80])
+
+        # --- Tier 2: piper via voice server ---
+        if not self.voice_service_available:
+            logger.warning("No speech engine available.")
             return
 
         try:
@@ -413,10 +449,36 @@ class AutonomousSystemController:
             logger.error("Voice playback failed: {}", str(exc))
 
     def _listen_for_voice_command(self) -> Optional[str]:
-        """Record and transcribe a voice command."""
+        """Record and transcribe a voice command.
+
+        Primary: Google Web Speech via SpeechRecognition (cloud, fast,
+        proven accurate on this machine). Fallback: local whisper pipeline.
+        """
         if not self.voice_enabled:
             return None
 
+        # --- Tier 1: cloud STT (SpeechRecognition + Google) ---
+        try:
+            import speech_recognition as sr
+
+            recognizer = sr.Recognizer()
+            with sr.Microphone() as source:
+                print("Listening (cloud STT)...")
+                recognizer.adjust_for_ambient_noise(source, duration=0.6)
+                audio = recognizer.listen(source, timeout=8, phrase_time_limit=10)
+            try:
+                text = recognizer.recognize_google(audio).strip()
+                if text:
+                    print(f"You said: {text}")
+                    return text
+            except sr.UnknownValueError:
+                print("Cloud STT could not understand audio - trying local whisper...")
+            except Exception as exc:
+                logger.warning("Cloud STT unavailable ({}), using local whisper.", str(exc)[:80])
+        except ImportError:
+            pass
+
+        # --- Tier 2: local whisper.cpp pipeline ---
         if not self.voice_service_available:
             logger.warning("Voice service is not available at {}", self.voice_service_url)
             print("Voice service is not available. Start local-server/server.py first.")
