@@ -303,10 +303,31 @@ class TaskDecomposer:
                 "description": clause,
             }
 
+        # 1b. Business task creation ("create a task to X")
+        task_match = re.match(
+            r"^(?:create|add|make)\s+(?:a\s+)?task\s+(?:to\s+)?(?P<title>.+)$",
+            clause,
+            flags=re.IGNORECASE,
+        )
+        if task_match:
+            return {
+                "id": f"step-{index}",
+                "agent": "business",
+                "action": "create_task",
+                "params": {
+                    "title": task_match.group("title").strip().strip("."),
+                    "description": clause,
+                },
+                "description": clause,
+            }
+
         # 2. Web / Browser check
         web_keywords = ["search", "google", "look up", "navigate", "website", "goto", "go to", "youtube", "http://", "https://", "url", "browser"]
-        if any(word in normalized for word in web_keywords):
-            is_search = any(word in normalized for word in ["search", "look up", "find", "google for", "youtube for"])
+        # NOTE: classify on the CLAUSE only - using the full command let an
+        # early 'search' clause poison every later clause's routing.
+        clause_local = clause.lower()
+        if any(word in clause_local for word in web_keywords):
+            is_search = any(word in clause_local for word in ["search", "look up", "find", "google for", "youtube for"])
             # Clean prefixes
             clean_pattern = r"^(?:open|launch|start|go to|goto|navigate to|search for|search|look up|google for|google|find)\s+"
             target_clean = re.sub(clean_pattern, "", clause, flags=re.IGNORECASE).strip()

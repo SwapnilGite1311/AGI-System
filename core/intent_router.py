@@ -25,6 +25,40 @@ DECISION_SCHEMA_EXAMPLE = """{
   "confidence": 0.0-1.0
 }"""
 
+FEW_SHOTS = """
+Examples of correct decisions:
+
+User: create a file named notes.txt with content hello world
+{"action": "create_file", "params": {"path": "notes.txt", "content": "hello world"}, "confidence": 0.95}
+
+User: suggest me laptops under 100000
+{"action": "search", "params": {"query": "laptops under 100000"}, "confidence": 0.9}
+
+User: which disk drives are present?
+{"action": "disk_usage", "params": {"path": "C:\\"}, "confidence": 0.9}
+
+User: open incognito window in chrome
+{"action": "open", "params": {"app": "chrome", "args": ["--incognito"]}, "confidence": 0.95}
+
+User: send an email to raj@gmail.com about the invoice
+{"action": "send_email", "params": {"to_email": "raj@gmail.com", "subject": "invoice", "body": ""}, "confidence": 0.9}
+
+User: hey what's up
+{"action": "chat", "params": {"reply": "Hey! All systems running smooth."}, "confidence": 0.95}
+
+User: search laptops on amazon and create a task to compare prices
+{"plan": [{"action": "site_search", "params": {"site": "amazon.in", "query": "laptops"}}, {"action": "create_task", "params": {"title": "compare laptop prices", "description": "Compare laptops found on Amazon"}}], "confidence": 0.9}
+
+User: take a screenshot and then list files in documents
+{"plan": [{"action": "screenshot", "params": {}}, {"action": "list_files", "params": {"path": "documents"}}], "confidence": 0.9}
+
+User: [PREVIOUS RESULT: created file report.txt with system summary] email that to raj@gmail.com
+{"action": "send_email", "params": {"to_email": "raj@gmail.com", "subject": "report.txt summary", "body": "See the generated report content from the previous step."}, "confidence": 0.9}
+
+User: flurbick wibble wobble
+{"action": "clarify", "params": {"question": "I didn't catch that - what would you like me to do?"}, "confidence": 0.3}
+"""
+
 SYSTEM_RULES = """You are the intent understanding module of VEGA, an assistant that
 executes real actions on this computer through TOOLS.
 
@@ -32,8 +66,11 @@ Choose exactly ONE tool action per user message and extract its parameters.
 Rules:
 - "action" MUST be one of the listed tool actions, spelled exactly.
 - Put required values inside "params".
-- If several independent steps are requested, still pick the single most
-  important first action; the queue handles the rest.
+- If the user requests MULTIPLE actions together, respond with a PLAN instead:
+  {"plan": [ {"action": "...", "params": {...}}, {"action": "...", "params": {...}} ], "confidence": 0.9}
+  Keep plan steps in the order the user said them (max 5 steps).
+- If a PREVIOUS RESULT block is present, pronouns like "it/that/the" refer to
+  it. Fill parameters from it where sensible.
 - If the message is casual chat (greetings, feelings, questions about you),
   use action "chat" with params {"reply": "<short friendly answer>"}.
 - If the request is unclear or you cannot confidently pick a tool, use
@@ -51,7 +88,7 @@ class LLMIntentRouter:
             "model", (config.get("conversation") or {}).get("model", "qwen2.5:3b")
         )
         num_gpu = ollama_config_gpu(config)
-        options = {"num_ctx": 2048, "temperature": 0.2}
+        options = {"num_ctx": 2048, "temperature": 0.2, "num_predict": 220}
         if num_gpu is not None:
             options["num_gpu"] = num_gpu
         self.options = options
@@ -60,17 +97,26 @@ class LLMIntentRouter:
         self.soft_actions = {"chat", "clarify"}
 
     # ------------------------------------------------------------------
-    def _build_prompt(self, command: str) -> str:
+    def _build_prompt(self, command: str, context: Optional[str] = None) -> str:
         manifest = self.manifest_provider() or []
         tool_lines = []
         for tool in manifest:
             actions = ", ".join(tool.get("actions", []))
             tool_lines.append(f"- {tool.get('name')}: {tool.get('description')} (actions: {actions})")
+        context_block = ""
+        if context:
+            context_block = (
+                "\nPREVIOUS EXECUTION RESULT (pronouns like it/that refer to this):\n"
+                + context[:600]
+                + "\n"
+            )
         return (
             SYSTEM_RULES
             + "\n\nAVAILABLE TOOLS:\n"
             + "\n".join(tool_lines)
             + "\n\nAdditional always-available soft actions: chat, clarify\n"
+            + FEW_SHOTS
+            + context_block
             + "\nResponse format example:\n"
             + DECISION_SCHEMA_EXAMPLE
             + "\n\nUSER MESSAGE:\n"
@@ -117,19 +163,51 @@ class LLMIntentRouter:
             actions.update(a.lower() for a in tool.get("actions", []))
         return actions
 
-    # ------------------------------------------------------------------
-    def decide(self, command: str) -> Optional[Dict[str, Any]]:
-        """Return {'action','params','confidence'} or None on hard failure."""
-        prompt = self._build_prompt(command)
-        raw = self._call_model(prompt)
-        decision = self._extract_json(raw)
-        if not decision or "action" not in decision:
-            logger.warning("IntentRouter produced no parsable decision.")
-            return None
-
+    def _normalize_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Coerce common small-model mistakes into valid decisions."""
         action = str(decision.get("action", "")).strip().lower()
         params = decision.get("params") if isinstance(decision.get("params"), dict) else {}
         confidence = float(decision.get("confidence", 0.5) or 0.0)
+
+        # Models sometimes answer with the TOOL name instead of an action.
+        tool_default_action = {
+            "file_ops": "search_files",
+            "system_ops": "status",
+            "vision_ops": "screenshot",
+            "web_ops": "search",
+            "business_ops": "create_task",
+        }
+        if action in tool_default_action:
+            action = tool_default_action[action]
+
+        return {"action": action, "params": params, "confidence": confidence}
+
+    # ------------------------------------------------------------------
+    def decide(self, command: str, context: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return {'action','params','confidence'}, a plan dict, or None."""
+        prompt = self._build_prompt(command, context=context)
+        raw = self._call_model(prompt)
+        decision = self._extract_json(raw)
+        if not decision:
+            logger.warning("IntentRouter produced no parsable decision.")
+            return None
+
+        # Multi-action plans pass through after light validation.
+        if isinstance(decision.get("plan"), list) and decision["plan"]:
+            steps = [
+                s for s in decision["plan"]
+                if isinstance(s, dict) and s.get("action")
+            ][:5]
+            if steps:
+                return {
+                    "plan": steps,
+                    "confidence": float(decision.get("confidence", 0.85) or 0.85),
+                }
+            return None
+
+        decision = self._normalize_decision(decision)
+        action = decision["action"]
+        params = decision["params"]
 
         known = self._known_actions()
         if action not in known:
@@ -140,17 +218,20 @@ class LLMIntentRouter:
                     "question": f"I understood you want something ({action}), "
                                 "but I don't have a tool for it. Can you rephrase?"
                 },
-                "confidence": confidence,
+                "confidence": decision.get("confidence", 0.5),
             }
 
-        if confidence < 0.35 and action not in self.soft_actions:
+        if confidence := decision.get("confidence", 0.5):
+            pass
+        confidence_val = float(decision.get("confidence", 0.5) or 0.5)
+        if confidence_val < 0.35 and action not in self.soft_actions:
             return {
                 "action": "clarify",
                 "params": {"question": f"Do you want me to {action}? Please confirm."},
-                "confidence": confidence,
+                "confidence": confidence_val,
             }
 
-        return {"action": action, "params": params, "confidence": confidence}
+        return {"action": action, "params": params, "confidence": confidence_val}
 
 
 def ollama_config_gpu(config: Dict[str, Any]) -> Optional[int]:

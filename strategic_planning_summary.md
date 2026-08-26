@@ -1,0 +1,1 @@
+Detailed strategic planning summary
