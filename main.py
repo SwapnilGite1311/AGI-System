@@ -11,6 +11,7 @@ import re
 import struct
 import sys
 import tempfile
+import time
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -35,14 +36,6 @@ from agents.business_process_automation import BusinessProcessAutomation
 from agents.enterprise_security import EnterpriseSecurity
 from agents.advanced_analytics import AdvancedAnalytics
 from learning.advanced_neural_network import AdvancedNeuralNetwork
-from learning.meta_learning_system import MetaLearningSystem
-from learning.self_reflection_system import SelfReflectionSystem
-from learning.autonomous_goal_system import AutonomousGoalSystem
-from learning.concept_discovery_system import ConceptDiscoverySystem
-from learning.self_programming_system import SelfProgrammingSystem
-from learning.algorithm_optimization_system import AlgorithmOptimizationSystem
-from learning.self_evolving_architecture import SelfEvolvingArchitecture
-from learning.advanced_cognitive_architecture import AdvancedCognitiveArchitecture
 from core.chairman import Chairman
 from core.council import LLMCouncil
 from core.autonomy import AutonomyEngine
@@ -51,6 +44,28 @@ from core.remote_queue import RemoteQueue
 from core.intent_router import LLMIntentRouter
 from core.task_decomposer import TaskDecomposer
 from core.tool_registry import ToolRegistry, ToolSpec
+
+
+# Resolved from this file, never the working directory: `python
+# path/to/main.py --tasks` from elsewhere previously died looking for
+# ./config/settings.json relative to wherever it was invoked (audit M-5).
+DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parent / "config" / "settings.json")
+
+# Force UTF-8 on both streams at import time, before anything can print.
+# When stdout is not a console - redirected to a log file, piped, or running
+# as a scheduled task - Windows falls back to cp1252 and any non-ASCII
+# character raises UnicodeEncodeError. That killed the reminder loop mid-fire
+# so reminders were never delivered and retried forever (audit M-2). This ran
+# inside _setup_logging before, which the --tasks/--journal CLI paths and
+# stderr never reached.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+from core.config import load_config
 
 
 class _LazyAgents:
@@ -86,14 +101,6 @@ class _LazyAgents:
             "security": EnterpriseSecurity,
             "analytics": AdvancedAnalytics,
             "advanced_neural": AdvancedNeuralNetwork,
-            "meta_learning": MetaLearningSystem,
-            "self_reflection": SelfReflectionSystem,
-            "autonomous_goals": AutonomousGoalSystem,
-            "concept_discovery": ConceptDiscoverySystem,
-            "self_programming": SelfProgrammingSystem,
-            "algorithm_optimization": AlgorithmOptimizationSystem,
-            "self_evolving": SelfEvolvingArchitecture,
-            "cognitive": AdvancedCognitiveArchitecture,
         }
         if key in builders:
             return builders[key](cfg)
@@ -134,16 +141,22 @@ class AutonomousSystemController:
         "opera",
     }
 
-    def __init__(self, config_path: str = "./config/settings.json"):
+    SEARCH_ENGINE_TEMPLATES = {
+        "google": "https://www.google.com/search?q={query}",
+        "bing": "https://www.bing.com/search?q={query}",
+        "duckduckgo": "https://duckduckgo.com/?q={query}",
+        "ddg": "https://duckduckgo.com/?q={query}",
+    }
+
+    def __init__(self, config_path: str = None):
+        config_path = config_path or DEFAULT_CONFIG_PATH
         self._setup_logging()
 
         logger.info("=" * 60)
         logger.info("AUTONOMOUS SYSTEM CONTROLLER v1.0")
         logger.info("=" * 60)
 
-        with open(config_path, "r", encoding="utf-8") as file:
-            self.config = json.load(file)
-
+        self.config = load_config(config_path)
         logger.info("Initializing core systems...")
         self.council = LLMCouncil(config_path)
         self.chairman = Chairman(config_path)
@@ -183,6 +196,20 @@ class AutonomousSystemController:
         self.execution_pause_seconds = float(execution_config.get("direct_pause_seconds", 0.3))
         self.decompose_complex_tasks = bool(execution_config.get("decompose_complex_tasks", True))
         self.tier_stats = {"direct": 0, "single_model": 0, "sequential": 0}
+        # Per-intent and per-agent outcome counters (item 4/7 of the
+        # autonomy pass): visibility into which routes and which agents are
+        # actually reliable, which is what a real "system improving with
+        # usage" claim needs to be checked against instead of asserted.
+        self.intent_stats: Dict[str, Dict[str, int]] = {}
+        self.agent_stats: Dict[str, Dict[str, int]] = {}
+        # Simple hourly rate limiter for actions that can run without a
+        # human watching in real time: remote/email-triggered commands and
+        # outward-facing actions (send_email). A ring buffer of timestamps,
+        # not a persisted budget - resets naturally as old entries age out.
+        self._unattended_action_timestamps: List[float] = []
+        self.unattended_action_hourly_limit = int(
+            execution_config.get("unattended_action_hourly_limit", 30)
+        )
         self.tool_registry = self._build_tool_registry()
 
         audio_config = self.config.get("audio", {})
@@ -192,6 +219,8 @@ class AutonomousSystemController:
         self.stt_model = audio_config.get("stt_model", "whisper")
         self.tts_engine = audio_config.get("tts_engine", "pyttsx3")
         self.voice_service_available = self._check_voice_service() if self.voice_enabled else False
+        # True while the interactive loop reads input from the microphone.
+        self._voice_mode = False
         
         # Auto-start voice server if enabled
         if self.voice_enabled and not self.voice_service_available:
@@ -208,15 +237,25 @@ class AutonomousSystemController:
 
         self.session_id = self.memory.start_session()
         self.running = False
+        # Serializes process_command calls across the interactive prompt and
+        # the background remote-queue worker. Agents (WebAgent.last_url,
+        # BrowserDriver.page, SystemAgent.command_history, WebAgent's
+        # _pending_confirmations, ...) hold single-instance state with no
+        # locking of their own - they were built assuming one command runs
+        # at a time. Freeing input() off the event loop (below) makes true
+        # concurrent execution possible for the first time, so this lock
+        # preserves that original one-at-a-time assumption instead of
+        # silently introducing races.
+        self._command_lock = asyncio.Lock()
+        # Set only while re-running a command the user explicitly approved
+        # after the automated safety review was unavailable (_chairman_gate).
+        self._critical_gate_bypass: Optional[str] = None
 
         logger.success("All systems initialized")
         logger.info("=" * 60)
 
     def _setup_logging(self):
         """Configure console and file logging."""
-
-        if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
         logger.remove()
         logger.add(
@@ -454,14 +493,26 @@ class AutonomousSystemController:
     def _listen_for_voice_command(self) -> Optional[str]:
         """Record and transcribe a voice command.
 
-        Primary: Google Web Speech via SpeechRecognition (cloud, fast,
-        proven accurate on this machine). Fallback: local whisper pipeline.
+        Honours audio.stt_model:
+          "auto"   - cloud first, local whisper as fallback (default)
+          "google" - cloud only
+          "whisper"- local whisper only, never leaves the machine
+
+        The setting was previously read into self.stt_model and never used,
+        so a config asking for local whisper still sent audio to Google. It
+        also made the local pipeline unreachable whenever the network was
+        up, which is why a broken local path could go unnoticed for so long.
         """
         if not self.voice_enabled:
             return None
 
+        preference = str(getattr(self, "stt_model", "auto") or "auto").lower()
+
         # --- Tier 1: cloud STT (SpeechRecognition + Google) ---
         try:
+            if preference == "whisper":
+                raise ImportError("stt_model=whisper: skipping cloud STT")
+
             import speech_recognition as sr
 
             recognizer = sr.Recognizer()
@@ -480,6 +531,10 @@ class AutonomousSystemController:
                 logger.warning("Cloud STT unavailable ({}), using local whisper.", str(exc)[:80])
         except ImportError:
             pass
+
+        if preference == "google":
+            print("Cloud STT failed and stt_model=google, so not falling back to whisper.")
+            return None
 
         # --- Tier 2: local whisper.cpp pipeline ---
         if not self.voice_service_available:
@@ -530,10 +585,36 @@ class AutonomousSystemController:
         else:
             message = f"Sorry, that failed. {str(result.get('error') or 'Unknown error')[:140]}"
 
+        message = self._strip_unspeakable(message)
         if len(message) > 300:
             message = message[:297] + "..."
 
+        if not message.strip():
+            return
         self._speak_text(message)
+
+    # Things that are unbearable read aloud: URLs, file paths, long hashes.
+    _URL_RE = re.compile(r"https?://\S+|www\.\S+")
+    _PATH_RE = re.compile(r"[A-Za-z]:\\[^\s,;]+|(?:/[\w.-]+){2,}")
+    _HASH_RE = re.compile(r"\b[0-9a-f]{16,}\b", re.IGNORECASE)
+    _QUERY_RE = re.compile(r"\?\S*=\S*")
+
+    @classmethod
+    def _strip_unspeakable(cls, text: str) -> str:
+        """Replace things no one wants dictated to them.
+
+        A web search made VEGA read the full result URL out loud, query
+        string and all - "h-t-t-p-s colon slash slash w-w-w dot google dot
+        com slash search question mark q equals..." - which is unusable.
+        The link is still printed on screen; it just is not spoken.
+        """
+        if not text:
+            return ""
+        spoken = cls._URL_RE.sub("the link on screen", text)
+        spoken = cls._PATH_RE.sub("the path on screen", spoken)
+        spoken = cls._QUERY_RE.sub("", spoken)
+        spoken = cls._HASH_RE.sub("an identifier", spoken)
+        return re.sub(r"\s{2,}", " ", spoken).strip()
 
     async def process_command(self, command: str) -> Dict[str, Any]:
         """Process a natural-language command through VEGA with graceful error handling."""
@@ -551,7 +632,21 @@ class AutonomousSystemController:
             tier = strategy["tier"]
             complexity = strategy["complexity"]
 
-            if tier == "brain":
+            critical_rejection = None
+            if complexity == "critical" and tier in {"direct", "brain"}:
+                gate_repr = {
+                    "tier": tier,
+                    "intent": strategy.get("intent"),
+                    "plan": strategy.get("plan"),
+                    "params": strategy.get("params"),
+                }
+                critical_rejection = await self._chairman_gate(command, gate_repr)
+
+            if critical_rejection is not None:
+                result = critical_rejection
+                result["tier"] = tier
+
+            elif tier == "brain":
                 self.tier_stats["brain"] = self.tier_stats.get("brain", 0) + 1
                 plan_steps = strategy.get("plan")
                 results = []
@@ -610,9 +705,13 @@ class AutonomousSystemController:
                         result["error"] = str(step.get("error"))
 
             elif tier == "clarify":
+                question = strategy.get("question", "Could you rephrase that?")
                 result = {
                     "success": True,
-                    "response": strategy.get("question", "Could you rephrase that?"),
+                    "tier": "clarify",
+                    "needs_clarification": True,
+                    "question": question,
+                    "response": question,
                 }
 
             elif tier == "conversation":
@@ -632,15 +731,22 @@ class AutonomousSystemController:
                     direct_intent=strategy.get("intent"),
                     context=self._build_autonomy_context(),
                 )
-                if self._should_use_council_fallback(plan, command) and hasattr(self, "council"):
-                    try:
-                        council_plan = await self.council.decide(command, complexity)
-                        if not council_plan.get("error"):
-                            plan = council_plan
-                    except Exception as exc:
-                        logger.warning("Council fallback for autonomy failed: {}", exc)
-                result = await self._execute_autonomous_decision(plan, command)
-                result["tier"] = "autonomous"
+                autonomous_rejection = (
+                    await self._chairman_gate(command, plan) if complexity == "critical" else None
+                )
+                if autonomous_rejection is not None:
+                    result = autonomous_rejection
+                    result["tier"] = "autonomous"
+                else:
+                    if self._should_use_council_fallback(plan, command) and hasattr(self, "council"):
+                        try:
+                            council_plan = await self.council.decide(command, complexity)
+                            if not council_plan.get("error"):
+                                plan = council_plan
+                        except Exception as exc:
+                            logger.warning("Council fallback for autonomy failed: {}", exc)
+                    result = await self._execute_autonomous_decision(plan, command)
+                    result["tier"] = "autonomous"
 
             elif tier == "direct":
                 self.tier_stats["direct"] += 1
@@ -709,19 +815,63 @@ class AutonomousSystemController:
 
             # Remember what we just did so follow-ups ("email that to raj")
             # can resolve pronouns against the last result.
-            try:
-                summary_bits = []
-                resp_text = str(result.get("response") or "").strip()
-                if resp_text:
-                    summary_bits.append(resp_text[:200])
-                for s in (result.get("results") or [])[:3]:
-                    if isinstance(s, dict):
-                        d = str(s.get("subtask_description") or s.get("message") or s.get("action") or "").strip()
-                        if d:
-                            summary_bits.append(d[:120])
-                self._last_execution_summary = " | ".join(summary_bits)[:600]
-            except Exception:
-                self._last_execution_summary = ""
+            self._last_execution_summary = self._summarize_result(result)
+
+            # Outcome verification: one cheap follow-up call checking whether
+            # the result actually satisfies what was asked, not just whether
+            # every step returned success=True.
+            #
+            # ADVISORY ONLY - it reports, it never re-executes. The previous
+            # version responded to a flagged mismatch by asking the council
+            # for a fresh plan and running it, which re-ran the side effects
+            # the first run had already performed (verified: it sent the same
+            # email twice). Automatic recovery needs idempotent actions, and
+            # the action layer has no idempotency keys - so the honest
+            # behaviour is to tell the user what looks wrong and let them
+            # decide, rather than silently doing it again.
+            #
+            # Skipped for direct/conversation/clarify tiers: those are cheap
+            # and deterministic, and paying a model call to check them is
+            # what made trivial commands slow.
+            # Only worth paying a model call where a mismatch is actually
+            # possible: multi-step work can silently drop part of a request
+            # (the case this exists to catch), whereas a single action that
+            # succeeded either did the one thing or didn't. Verifying every
+            # single-step result cost ~15s to confirm the obvious.
+            steps_total = int(result.get("steps_total") or 0)
+            worth_verifying = steps_total > 1 or bool(result.get("decomposition"))
+
+            if result.get("success") and worth_verifying and tier in {"brain", "autonomous", "sequential", "single_model"}:
+                try:
+                    verification = await self.council.verify_outcome(command, self._last_execution_summary)
+                except Exception as exc:
+                    logger.warning("Outcome verification call failed: {}", str(exc))
+                    verification = None
+
+                if verification:
+                    result["verification"] = verification
+                    if (
+                        verification.get("verified")
+                        and not verification.get("satisfied")
+                        and verification.get("confidence", 0.0) >= 0.5
+                    ):
+                        reason = str(verification.get("reason") or "").strip()
+                        logger.warning("Outcome verification flagged a possible mismatch: {}", reason)
+                        # Surface it honestly instead of re-running: the work
+                        # DID happen, it just may not have been what was asked.
+                        result["verification_warning"] = (
+                            f"I completed that, but it may not fully match what you asked: {reason}"
+                            if reason else
+                            "I completed that, but it may not fully match what you asked."
+                        )
+                        # A detected mismatch is not a success. Announcing
+                        # "Task completed successfully" and then recording
+                        # `-> success` taught the learner that searching the
+                        # web is a correct response to "create a document",
+                        # so it would confidently repeat the mistake. The
+                        # actions still ran and are still reported; what
+                        # changes is that we stop calling it a win.
+                        result["outcome_mismatch"] = True
 
             self._cache_command_strategy(command, strategy, result)
             self._record_learning(command, strategy, result)
@@ -743,21 +893,13 @@ class AutonomousSystemController:
             return result
 
     def _journal(self, command: str, strategy: Dict[str, Any], result: Dict[str, Any]):
-        """Append a human-readable record of one executed command to
-        data/execution_journal.json so the supervisor can review activity
-        without reading raw logs. Journaling must never break execution."""
+        """Append a human-readable record of one executed command to the
+        execution_journal table (data/episodic_memory.db) so the supervisor
+        can review activity without reading raw logs. Journaling must never
+        break execution. Previously a single JSON file rewritten whole (up
+        to 500 entries) on every command."""
 
         try:
-            journal_path = Path(__file__).resolve().parent / "data" / "execution_journal.json"
-            entries = []
-            if journal_path.exists():
-                try:
-                    entries = json.loads(journal_path.read_text(encoding="utf-8"))
-                    if not isinstance(entries, list):
-                        entries = []
-                except Exception:
-                    entries = []
-
             raw_steps = result.get("results") or result.get("steps") or []
             step_summary = []
             for step in raw_steps[:10]:
@@ -788,8 +930,7 @@ class AutonomousSystemController:
             if result.get("error"):
                 entry["error"] = str(result.get("error"))
 
-            entries.append(entry)
-            journal_path.write_text(json.dumps(entries[-500:], indent=2, default=str), encoding="utf-8")
+            self.memory.add_journal_entry(entry)
         except Exception as exc:
             logger.debug("Execution journal write skipped: {}", str(exc))
 
@@ -814,10 +955,39 @@ class AutonomousSystemController:
         # Generic helpful suggestion
         return f"I encountered an issue with that request. Could you rephrase it, or would you like me to help with something else? I'm designed to be helpful with tasks like opening apps, managing files, checking system status, or web searches."
 
+    @staticmethod
+    def _summarize_result(result: Dict[str, Any]) -> str:
+        """Build a short human-readable summary of an execution result.
+
+        Used both for conversational follow-up ("email that to raj") and as
+        the input to outcome verification - factored out so both stay in
+        sync instead of duplicating the same bit-collection logic.
+        """
+        try:
+            summary_bits = []
+            resp_text = str(result.get("response") or "").strip()
+            if resp_text:
+                summary_bits.append(resp_text[:200])
+            for s in (result.get("results") or [])[:3]:
+                if isinstance(s, dict):
+                    d = str(s.get("subtask_description") or s.get("message") or s.get("action") or "").strip()
+                    if d:
+                        summary_bits.append(d[:120])
+            return " | ".join(summary_bits)[:600]
+        except Exception:
+            return ""
+
     def _record_learning(self, command: str, strategy: Dict[str, Any], result: Dict[str, Any]):
         """Record command learning without letting storage failures break execution."""
 
         try:
+            # A run the verifier flagged as not matching the request is not a
+            # pattern to reuse. Recording it as a success is what taught the
+            # system that "search the web" answers "create a document".
+            if result.get("outcome_mismatch"):
+                result = dict(result)
+                result["success"] = False
+                result["mismatch"] = True
             self.agents["learning"].record_command(command, strategy, result)
         except Exception as exc:
             logger.warning("Learning history write failed without blocking command: {}", str(exc))
@@ -841,6 +1011,30 @@ class AutonomousSystemController:
 
         return command
 
+    def _recall_relevant_context(self, command: str, limit: int = 3) -> str:
+        """Summarize semantically similar past commands for the planner.
+
+        This is what makes episodic memory actually influence a decision.
+        The embedding write was previously paid on every command while
+        nothing ever read it back (audit H-1); this is the read side.
+        Falls back silently to "" when no embedding model is available,
+        so it degrades to the system's prior behaviour rather than failing.
+        """
+        try:
+            episodes = self.memory.recall_similar_episodes(command, limit=limit)
+        except Exception as exc:
+            logger.debug("Similar-episode recall unavailable: {}", str(exc))
+            return ""
+
+        lines = []
+        for ep in episodes:
+            task = str(ep.get("task") or "").strip()
+            if not task or task.lower() == (command or "").strip().lower():
+                continue  # don't feed the command back to itself
+            outcome = "succeeded" if ep.get("success") else "failed"
+            lines.append(f"- \"{task[:110]}\" ({outcome})")
+        return "\n".join(lines[:limit])
+
     def _build_autonomy_context(self) -> Dict[str, Any]:
         """Gather memory/learning context for offline autonomous planning."""
 
@@ -853,9 +1047,18 @@ class AutonomousSystemController:
         except Exception as exc:
             logger.warning("Workflow discovery unavailable for autonomy context: {}", str(exc))
 
+        # autonomy._generate_proactive_suggestions/_summarize_context read
+        # recent_context as [{"command": ...}, ...]. get_recent_context()
+        # returns short-term memory SLOTS keyed by name (last_command,
+        # last_strategy, ...) - not a command history - so every lookup of
+        # ctx.get("command") always returned "" and proactive suggestions
+        # could never fire. Session activities already hold the real recent
+        # command history (log_session_activity is called every command).
+        recent_commands = self.memory.get_last_session_activities(limit=5) if hasattr(self.memory, "get_last_session_activities") else []
+
         return {
             "preferences": getattr(self.memory, "preferences", {}),
-            "recent_context": self.memory.get_recent_context(limit=5) if hasattr(self.memory, "get_recent_context") else [],
+            "recent_context": [{"command": c} for c in recent_commands],
             "workflow_patterns": workflows,
             "tools": self.get_tool_manifest(),
         }
@@ -869,19 +1072,57 @@ class AutonomousSystemController:
         "compare", "buy", "order", "book", "clean", "sort", "rename",
     )
 
+    # Question openers. Real requests are often phrased as questions with no
+    # imperative verb and no "?" typed at all - "how much room have i got
+    # left", "whats hogging the memory". Requiring a verb dismissed those as
+    # gibberish and answered them as small talk.
+    QUESTION_OPENERS = (
+        "what", "whats", "what's", "how", "hows", "how's", "where", "which",
+        "when", "why", "who", "is there", "are there", "do i", "have i",
+        "can you", "could you", "would you", "any chance",
+    )
+
+    # Nouns from this system's own domain. A sentence naming one is about the
+    # machine, not chit-chat - "my cat is fluffy" names none of them.
+    DOMAIN_NOUNS = (
+        "file", "files", "folder", "folders", "directory", "disk", "drive",
+        "drives", "space", "storage", "room", "memory", "ram", "cpu",
+        "processor", "process", "processes", "app", "apps", "application",
+        "program", "window", "screen", "browser", "tab", "download",
+        "downloads", "desktop", "document", "documents", "spreadsheet",
+        "email", "inbox", "task", "tasks", "project", "reminder", "calendar",
+        "battery", "network", "wifi", "internet", "system", "machine",
+        "laptop", "computer", "temp", "cache", "junk", "trash", "recycle",
+    )
+
     @classmethod
     def _looks_actionable(cls, normalized: str) -> bool:
         """Heuristic: does this look like a real task/command at all?
 
-        Requires at least one known action verb, a digit, or a question mark.
-        Pure gibberish ("flurbick wibble wobble") fails all three and is
-        routed to conversation instead of being planned into junk tasks.
+        Accepts a question mark, a digit, a known action verb, or - added
+        after real misroutes - a question opener paired with a noun from this
+        system's domain.
+
+        The verb-only rule sent "how much room have i got left" (a disk
+        query) and "whats hogging the memory" (a process query) to small
+        talk, because neither contains an imperative verb. Requiring BOTH an
+        opener and a domain noun keeps genuine gibberish out: "flurbick
+        wibble wobble" and "my cat is fluffy" still fail every branch.
         """
         if "?" in normalized:
             return True
         if any(ch.isdigit() for ch in normalized):
             return True
-        return any(re.search(rf"\b{re.escape(v)}\b", normalized) for v in cls.ACTION_VERBS)
+        if any(re.search(rf"\b{re.escape(v)}\b", normalized) for v in cls.ACTION_VERBS):
+            return True
+
+        has_opener = any(
+            re.search(rf"\b{re.escape(q)}\b", normalized) for q in cls.QUESTION_OPENERS
+        )
+        has_domain_noun = any(
+            re.search(rf"\b{re.escape(n)}\b", normalized) for n in cls.DOMAIN_NOUNS
+        )
+        return has_opener and has_domain_noun
 
     def _determine_execution_strategy(self, command: str) -> Dict[str, Any]:
         """Determine which execution tier should handle the command."""
@@ -897,24 +1138,29 @@ class AutonomousSystemController:
             }
 
         complexity = self._assess_complexity(command)
+
+        # Unambiguous multi-step markers ("and then"/"then"/"after that", or
+        # 2+ named action_markers) must decompose BEFORE the single-intent
+        # shortcut below can collapse them into one action. A phrase-substring
+        # match in _parse_direct_command (e.g. "system status" inside "show
+        # system status and then list running processes") matches the whole
+        # multi-clause sentence and silently discards everything after it.
+        # This is intentionally narrower than the full _contains_explicit_
+        # sequence check (see below): its broad "2+ verbs joined by and"
+        # heuristic also fires on "open chrome and search for AI trends",
+        # which has a dedicated single-action browser_action regex - running
+        # the broad heuristic this early would wrongly decompose a command
+        # that is correctly handled as one action.
+        if self.decompose_complex_tasks and self._has_unambiguous_sequence_marker(normalized):
+            return {"tier": "sequential", "complexity": "complex", "source": "decomposer"}
+
         direct_intent = self._parse_direct_command(command)
         autonomy = getattr(self, "autonomy", None)
 
-        # Multi-action commands must decompose BEFORE the single-intent
-        # shortcut can collapse them into one browser action.
-        if self.decompose_complex_tasks and self._contains_explicit_sequence(normalized):
-            return {"tier": "sequential", "complexity": "complex", "source": "decomposer"}
-
-        # Known deterministic intents bypass the council on every machine -
-        # not just ones with learned history (fresh installs misrouted email,
-        # screen QA and screenshots into LLM planning).
-        if direct_intent and direct_intent.get("type") in {
-            "browser_action", "fill_form", "confirm_submission",
-            "send_email", "screen_qa", "screenshot",
-            "system_info", "network_info", "disk_drives",
-            "create_task", "list_tasks", "calendar_integration",
-            "security_ssl_check",
-        }:
+        # ANY deterministic intent routes directly - all 76 types have
+        # execution handlers (contract audit). Power actions keep their
+        # confirmation gates inside the executor.
+        if direct_intent:
             return {
                 "tier": "direct",
                 "complexity": "simple",
@@ -922,49 +1168,24 @@ class AutonomousSystemController:
                 "source": "rules",
             }
 
+        # AUTONOMY claims only unparsed commands - 'open browser' is parsed
+        # directly and resolves the saved default_browser preference inside
+        # _execute_directly's open_application handler, so autonomy's role
+        # here is heuristics deterministic parsing genuinely cannot resolve:
+        # 'currently opened apps', bare-open clarification flows, etc.
+        if autonomy and autonomy.should_handle(command, complexity):
+            return {"tier": "autonomous", "complexity": complexity, "source": "autonomy"}
+
+        # Multi-action UNPARSED commands decompose deterministically - this
+        # is the broader heuristic (includes "2+ verbs joined by and/then"
+        # and "2+ search for" counting) that would false-positive on composite
+        # single-action patterns already handled above by direct_intent.
+        if self.decompose_complex_tasks and self._contains_explicit_sequence(normalized):
+            return {"tier": "sequential", "complexity": "complex", "source": "decomposer"}
+
         conversation_agent = self.agents.get("conversation")
         if conversation_agent and conversation_agent.is_conversation(command):
             return {"tier": "conversation", "complexity": "simple", "source": "conversation"}
-
-        # BRAIN TIER: one LLM call understands intent against the tool
-        # manifest. Replaces phrase-matching for everything non-instant.
-        if getattr(self, "intent_router", None):
-            try:
-                decision = self.intent_router.decide(
-                    command,
-                    context=getattr(self, "_last_execution_summary", "") or None,
-                )
-            except Exception as exc:
-                logger.warning("IntentRouter error: {}", str(exc)[:100])
-                decision = None
-            if decision:
-                plan_steps = decision.get("plan")
-                if plan_steps:
-                    return {
-                        "tier": "brain",
-                        "complexity": "complex",
-                        "source": "brain",
-                        "plan": plan_steps,
-                    }
-                action = decision.get("action")
-                if action == "chat":
-                    return {"tier": "conversation", "complexity": "simple", "source": "brain"}
-                if action == "clarify":
-                    return {
-                        "tier": "clarify",
-                        "complexity": "simple",
-                        "question": (decision.get("params") or {}).get(
-                            "question", "Could you rephrase that for me?"
-                        ),
-                        "source": "brain",
-                    }
-                return {
-                    "tier": "brain",
-                    "complexity": "simple",
-                    "source": "brain",
-                    "intent": {"type": action},
-                    "params": decision.get("params", {}),
-                }
 
         # Nonsense gate: commands with no action verbs, no digits, and no
         # question mark are almost certainly gibberish or chat - never plan
@@ -1013,38 +1234,104 @@ class AutonomousSystemController:
                     "adaptive": adaptive,
                 }
 
-        if direct_intent:
-            if (
-                direct_intent.get("type") == "open_application"
-                and direct_intent.get("app") == "browser"
-                and autonomy
-            ):
-                return {"tier": "autonomous", "complexity": complexity, "source": "autonomy"}
-            return {
-                "tier": "direct",
-                "complexity": "simple",
-                "intent": direct_intent,
-                "source": "rules",
-            }
-
-        if autonomy and autonomy.should_handle(command, complexity):
-            return {"tier": "autonomous", "complexity": complexity, "source": "autonomy"}
-
-        if complexity in {"simple", "medium"}:
+        if complexity in {"simple", "medium", "complex"}:
+            # BRAIN TIER (final fallback): no regex matched and no learned
+            # route claims this - let the model understand the sentence
+            # against the tool manifest instead of guessing with a council.
+            # Widened to include "complex" - the intent router already
+            # supports multi-step PLANS (this is the whole point of Brain
+            # v2), and one Brain call is cheaper and more accurate than a
+            # multi-member council for compound-but-not-critical commands.
+            # "critical" complexity still falls through below to the full
+            # council + Chairman validation path.
+            if getattr(self, "intent_router", None):
+                try:
+                    # Router context = what just happened (for pronoun
+                    # resolution) + semantically similar past commands (so
+                    # the model can reuse phrasings that worked before).
+                    context_parts = []
+                    last_summary = getattr(self, "_last_execution_summary", "") or ""
+                    if last_summary:
+                        context_parts.append(last_summary)
+                    similar = self._recall_relevant_context(command)
+                    if similar:
+                        context_parts.append("Similar past commands:\n" + similar)
+                    decision = self.intent_router.decide(
+                        command,
+                        context="\n\n".join(context_parts) or None,
+                    )
+                except Exception as exc:
+                    logger.warning("IntentRouter error: {}", str(exc)[:100])
+                    decision = None
+                if decision:
+                    plan_steps = decision.get("plan")
+                    if plan_steps:
+                        return {
+                            "tier": "brain",
+                            "complexity": "complex",
+                            "source": "brain",
+                            "plan": plan_steps,
+                        }
+                    action = decision.get("action")
+                    if action == "chat":
+                        return {"tier": "conversation", "complexity": "simple", "source": "brain"}
+                    if action == "clarify":
+                        return {
+                            "tier": "clarify",
+                            "complexity": "simple",
+                            "question": (decision.get("params") or {}).get(
+                                "question", "Could you rephrase that for me?"
+                            ),
+                            "source": "brain",
+                        }
+                    return {
+                        "tier": "brain",
+                        "complexity": "simple",
+                        "source": "brain",
+                        "intent": {"type": action},
+                        "params": decision.get("params", {}),
+                    }
             return {"tier": "single_model", "complexity": complexity, "source": "council"}
 
         return {"tier": "sequential", "complexity": complexity, "source": "council"}
 
     def _can_reuse_learned_strategy(self, learned_strategy: Dict[str, Any]) -> bool:
-        """Only reuse direct learned strategies that do not carry stale user parameters."""
+        """Whether a learned direct strategy is safe/confident enough to reuse.
 
+        Previously hardcoded to exactly 3 read-only intent types regardless
+        of how well any OTHER intent actually performed - the adaptive/
+        phase-5 learning stack computed a confidence score for every intent
+        but could only ever act on system_info/command_history/voice_status,
+        so learning never influenced routing for anything else (the L-6
+        finding). Replaced with a real check: any intent type may be reused
+        once its OWN measured success rate (LearningAgent.get_intent_
+        confidence, weighted by verified outcomes where available - see
+        core.council.verify_outcome) crosses a high bar over enough samples.
+
+        This only changes WHICH intents may be reused, not the safety net
+        around it: every caller of this method already requires a >=0.99
+        near-exact text match (find_similar_success) or an equivalent
+        adaptive-cluster/classification match before reaching here, so
+        replayed parameters are always paired with essentially the same
+        original command text.
+        """
         intent_type = (learned_strategy.get("intent") or {}).get("type")
-        reusable_intents = {
-            "system_info",
-            "command_history",
-            "voice_status",
-        }
-        return intent_type in reusable_intents
+        if not intent_type:
+            return False
+
+        # Always-safe: read-only, no command-specific parameters to go stale.
+        if intent_type in {"system_info", "command_history", "voice_status"}:
+            return True
+
+        learning_agent = self.agents.get("learning")
+        if not learning_agent or not hasattr(learning_agent, "get_intent_confidence"):
+            return False
+        try:
+            stats = learning_agent.get_intent_confidence(intent_type)
+        except Exception as exc:
+            logger.warning("Intent confidence lookup failed: {}", str(exc))
+            return False
+        return stats.get("samples", 0) >= 5 and stats.get("success_rate", 0.0) >= 0.9
 
     def _get_adaptive_recommendation(self, command: str) -> Optional[Dict[str, Any]]:
         """Get a Phase 4 advisory routing recommendation without blocking execution."""
@@ -1057,6 +1344,87 @@ class AutonomousSystemController:
         except Exception as exc:
             logger.warning("Adaptive recommendation unavailable: {}", str(exc))
             return None
+
+    async def _chairman_gate(self, command: str, plan_repr: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Critical-complexity safety gate reachable from every tier.
+
+        Previously Chairman.validate_plan only ran inside the council branch,
+        so direct/brain/autonomous tiers skipped safety review entirely for
+        critical-complexity commands (verified: "delete the temp folder"
+        routes to the autonomous tier, which never consulted the Chairman).
+        Returns None when approved; otherwise a rejected result ready to
+        return from process_command.
+
+        Degrades to a typed confirmation when the model is unreachable
+        instead of refusing outright. The gate previously failed closed on
+        any model error, which meant one Ollama hiccup made every command
+        containing delete/remove/restart/format/uninstall impossible -
+        including harmless ones like "format my notes" - in a product whose
+        premise is working locally when things are down. The action is still
+        never performed without approval; the approver just becomes the user.
+        """
+        # The user already approved this exact command after an unavailable
+        # safety review - honour it once and fall straight through.
+        if getattr(self, "_critical_gate_bypass", None) == command:
+            logger.info("Critical gate bypassed by explicit user confirmation.")
+            return None
+
+        try:
+            validation = await self.chairman.validate_plan(plan_repr, command)
+        except Exception as exc:
+            logger.error("Chairman critical-tier gate failed: {}", str(exc))
+            return self._stage_critical_confirmation(command, plan_repr, str(exc))
+
+        # A model that answered but couldn't produce a verdict (parse
+        # failure) is also "unavailable" for our purposes - don't treat an
+        # unparseable response as a considered rejection.
+        if validation.get("error") and not validation.get("reasoning"):
+            return self._stage_critical_confirmation(command, plan_repr, str(validation.get("error")))
+
+        if validation.get("approved"):
+            return None
+
+        logger.warning("Chairman rejected critical-complexity command outside the council path")
+        reasoning = str(validation.get("reasoning") or "").strip()
+        # The display reads result["error"]; this path only set "reason", so a
+        # CORRECT safety refusal surfaced to the user as "I encountered an
+        # issue: Unknown error" - indistinguishable from a crash. Say plainly
+        # that it was refused, and why.
+        return {
+            "success": False,
+            "rejected": True,
+            "reason": validation.get("reasoning"),
+            "error": (
+                f"I refused that on safety grounds: {reasoning}" if reasoning
+                else "I refused that on safety grounds - it looked destructive "
+                     "and I could not confirm it was safe to run."
+            ),
+            "recovery_suggestion": (
+                "If you genuinely want this, rephrase it narrowly (name the exact "
+                "file or folder) and I will ask you to confirm before acting."
+            ),
+            "validation": validation,
+        }
+
+    def _stage_critical_confirmation(self, command: str, plan_repr: Dict[str, Any], why: str) -> Dict[str, Any]:
+        """Fall back to human approval when automated review is unavailable."""
+
+        self.memory.remember_short_term(
+            "pending_critical_command",
+            {"command": command, "plan": plan_repr, "reason": why},
+        )
+        logger.warning("Safety review unavailable ({}) - deferring to user confirmation.", why[:80])
+        return {
+            "success": False,
+            "needs_confirmation": True,
+            "question": (
+                "I couldn't run my automated safety review for that "
+                f"(reason: {why[:100]}). It looks potentially destructive. "
+                "Type 'confirm command' to run it anyway, or 'cancel command' to discard it."
+            ),
+            "warning": f"Automated safety review unavailable: {why[:140]}",
+            "results": [],
+        }
 
     def _should_use_council_fallback(self, plan: Dict[str, Any], command: str) -> bool:
         """Prefer the council planner when the autonomy engine only produced a weak decomposition."""
@@ -1085,9 +1453,13 @@ class AutonomousSystemController:
 
         return False
 
-    def _contains_explicit_sequence(self, normalized_command: str) -> bool:
-        """Return whether the command clearly contains multiple sequential actions."""
-
+    def _has_unambiguous_sequence_marker(self, normalized_command: str) -> bool:
+        """The narrow subset of _contains_explicit_sequence safe to check
+        BEFORE direct-intent parsing: an explicit "and then"/"then"/"after
+        that" marker, or 2+ specifically-named action phrases. Both signal a
+        real multi-step command with no plausible single-action reading, so
+        there is no composite regex they could be wrongly overriding.
+        """
         if any(token in normalized_command for token in [" and then ", " then ", " after that "]):
             return True
 
@@ -1100,7 +1472,12 @@ class AutonomousSystemController:
             " organize desktop",
             " organize documents",
         ]
-        if " and " in normalized_command and sum(marker in normalized_command for marker in action_markers) >= 2:
+        return " and " in normalized_command and sum(marker in normalized_command for marker in action_markers) >= 2
+
+    def _contains_explicit_sequence(self, normalized_command: str) -> bool:
+        """Return whether the command clearly contains multiple sequential actions."""
+
+        if self._has_unambiguous_sequence_marker(normalized_command):
             return True
 
         if normalized_command.count(" search ") >= 2 or normalized_command.count(" search for ") >= 2:
@@ -1126,16 +1503,26 @@ class AutonomousSystemController:
 
         command_lower = command.lower()
 
+        # Word-boundary matched, and "format" is qualified: a bare substring
+        # check classified "format my notes" (text formatting) as critical,
+        # which then required a safety review to do anything at all.
         critical_keywords = [
-            "delete",
-            "remove",
-            "uninstall",
-            "format",
-            "shutdown",
-            "restart",
-            "registry",
+            r"\bdelete\b",
+            r"\bdeleting\b",
+            r"\bremove\b",
+            r"\bremoving\b",
+            r"\buninstall\b",
+            r"\bwipe\b",
+            r"\berase\b",
+            r"\bshut\s*down\b",
+            r"\bshutdown\b",
+            r"\breboot\b",
+            r"\brestart\b",
+            r"\bregistry\b",
+            # "format" only when it means formatting a disk/drive/volume
+            r"\bformat\b\s+(?:the\s+|my\s+)?(?:[a-z]:|disk|drive|volume|partition|usb|sd\s*card)",
         ]
-        if any(keyword in command_lower for keyword in critical_keywords):
+        if any(re.search(keyword, command_lower) for keyword in critical_keywords):
             return "critical"
 
         complex_keywords = [
@@ -1179,11 +1566,191 @@ class AutonomousSystemController:
 
         return "medium"
 
+    # A bare address, and the words that introduce a subject.
+    _EMAIL_ADDR_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+    _SUBJECT_INTRO = (
+        "regarding", "about", "re", "with subject", "subject",
+        "concerning", "on the topic of",
+    )
+    _BODY_INTRO = (
+        "saying", "that says", "with body", "body", "with message",
+        "message", "telling them", "and say", "which says",
+    )
+
+    def _parse_structured_command(self, command: str, normalized: str) -> Optional[Dict[str, Any]]:
+        """Catch structured requests before the generic browser branch.
+
+        _parse_direct_command is an ordered chain, and the browser/search
+        branches sit roughly 350 lines above the enterprise ones. Anything
+        containing a domain-shaped token or the word "search" was therefore
+        claimed by the browser first:
+
+            "create tenant Acme with domain acme.com"  -> opened acme.com
+            "search for files named report"            -> googled it
+
+        Neither needs a language model to understand; they just needed to be
+        matched before the catch-all. Returns None for anything that is not
+        an unambiguous structured request, so every other tier is untouched.
+        """
+        # --- tenant creation: a domain here is data, not a place to visit ---
+        tenant = re.search(
+            r"\b(?:create|add|register|set\s*up)\s+(?:a\s+)?tenant\s+"
+            r"(?P<name>[A-Za-z0-9 &._-]+?)"
+            r"(?:\s+with\s+domain\s+(?P<domain>[\w.-]+\.[A-Za-z]{2,}))?\s*$",
+            command, re.IGNORECASE,
+        )
+        if tenant:
+            return {
+                "type": "create_tenant",
+                "tenant_name": tenant.group("name").strip(),
+                "domain": (tenant.group("domain") or "").strip() or None,
+            }
+
+        # --- file search: "search FOR FILES" is the filesystem, not the web ---
+        if re.search(r"\b(?:search|find|look)\b", normalized) and re.search(
+            r"\bfiles?\b|\bfolders?\b|\bdocuments?\b", normalized
+        ):
+            # The older branch below parses "<query> in <path>" and splits
+            # the location off correctly; only take searches that name no
+            # location, which it could not handle at all.
+            if re.search(r"\b(?:in|inside|under|within)\b", normalized):
+                return None
+            if not re.search(r"\b(?:on|in)\s+(?:the\s+)?(?:web|internet|google|bing|amazon|youtube)\b", normalized):
+                query = re.search(
+                    r"\b(?:named|called|matching|containing)\s+[\"']?(?P<q>[^\"']+?)[\"']?\s*$",
+                    command, re.IGNORECASE,
+                )
+                return {
+                    "type": "search_files",
+                    "query": (query.group("q").strip() if query else ""),
+                    "path": self._extract_known_path(command),
+                    "search_content": "content" in normalized or "inside" in normalized,
+                }
+
+        # --- task creation ---
+        task = re.search(
+            r"\b(?:create|add|make|new)\s+(?:a\s+)?task\s+"
+            r"(?:(?:named|called|titled|for|to)\s+)?[\"']?(?P<title>.+?)[\"']?\s*$",
+            command, re.IGNORECASE,
+        )
+        if task:
+            title = task.group("title").strip()
+            if title:
+                return {"type": "create_task", "title": title, "description": title}
+
+        # --- document / report creation ---
+        document = re.search(
+            r"\b(?:create|write|make|draft|generate|prepare)\s+"
+            r"(?:me\s+)?(?:a|an|the)?\s*(?P<kind>document|doc|report|summary|write[- ]?up)\b"
+            r"(?:\s+(?:about|on|for|regarding|covering|titled|called|named)\s+(?P<topic>.+?))?\s*$",
+            command, re.IGNORECASE,
+        )
+        if document:
+            topic = (document.group("topic") or "").strip()
+            if topic:
+                return {
+                    "type": "create_document",
+                    "title": topic,
+                    "topic": topic,
+                    "kind": document.group("kind").lower(),
+                }
+
+        return None
+
+    def _parse_email_command(self, command: str, normalized: str) -> Optional[Dict[str, Any]]:
+        """Deterministically parse "send an email to X regarding Y".
+
+        There was no send_email branch in the direct parser at all, so every
+        email request fell through to the Brain tier and depended on a 3B
+        model extracting recipient, subject and body as JSON. It routinely
+        failed, and "send an email to <addr> regarding project" simply did
+        not work. Address and intent are structured enough to parse exactly;
+        only the wording around them varies.
+
+        Returns None for anything that is not clearly an email request, so
+        the existing tiers keep handling everything else.
+        """
+        if not re.search(r"\b(?:e-?mail|mail)\b", normalized):
+            return None
+        has_send_verb = re.search(
+            r"\b(?:send|write|shoot|fire off|compose|draft)\b", normalized
+        )
+        # "email bob@x.com ..." uses "email" itself as the verb.
+        email_as_verb = re.match(r"^(?:e-?mail|mail)\s+[\w.+-]+@", normalized)
+        if not has_send_verb and not email_as_verb:
+            # "check email" / "read my inbox" are different intents.
+            return None
+
+        # Use the ORIGINAL text for the address and body so casing survives.
+        match = self._EMAIL_ADDR_RE.search(command)
+        if not match:
+            return {
+                "type": "send_email",
+                "to_email": None,
+                "subject": None,
+                "body": None,
+                "needs": "recipient",
+            }
+        to_email = match.group(0)
+
+        # Everything after the address is where subject/body live.
+        tail = command[match.end():].strip(" ,.;:-")
+
+        subject = None
+        body = None
+
+        subject_pattern = r"\b(?:" + "|".join(
+            re.escape(w) for w in sorted(self._SUBJECT_INTRO, key=len, reverse=True)
+        ) + r")\b\s+(.+)"
+        body_pattern = r"\b(?:" + "|".join(
+            re.escape(w) for w in sorted(self._BODY_INTRO, key=len, reverse=True)
+        ) + r")\b\s+(.+)"
+
+        body_match = re.search(body_pattern, tail, re.IGNORECASE)
+        if body_match:
+            body = body_match.group(1).strip(" \"'")
+            tail = tail[:body_match.start()].strip(" ,.;:-")
+
+        subject_match = re.search(subject_pattern, tail, re.IGNORECASE)
+        if subject_match:
+            subject = subject_match.group(1).strip(" \"'")
+        elif tail:
+            # "send an email to x@y.com project update" - the remainder is
+            # the subject even without an introducing word.
+            subject = tail.strip(" \"'")
+
+        # Trailing conjunctions survive splitting on the body phrase
+        # ("with subject Update and body all done" -> "Update and").
+        if subject:
+            subject = re.sub(r"\s+(?:and|then|plus)\s*$", "", subject).strip(" ,.;:-")
+
+        if subject and not body:
+            # A one-liner like "regarding project" is the whole message.
+            body = subject
+        if body and not subject:
+            subject = body[:60]
+
+        return {
+            "type": "send_email",
+            "to_email": to_email,
+            "subject": subject or "(no subject)",
+            "body": body or "",
+            "needs": None if (subject or body) else "content",
+        }
+
     def _parse_direct_command(self, command: str) -> Optional[Dict[str, Any]]:
         """Parse deterministic commands that should bypass the council."""
 
         normalized = self._normalize_command(command)
         normalized = re.sub(r"^(?:please|can you|could you|would you)\s+", "", normalized)
+
+        email_intent = self._parse_email_command(command, normalized)
+        if email_intent:
+            return email_intent
+
+        structured = self._parse_structured_command(command, normalized)
+        if structured:
+            return structured
 
         positive_feedback = re.match(r"^(?:that worked|this worked|good job|correct|yes that is right|that was right)(?:\s*[:,-]?\s*(?P<text>.*))?$", normalized)
         if positive_feedback:
@@ -1411,9 +1978,22 @@ class AutonomousSystemController:
             flags=re.IGNORECASE,
         )
         if backup_folder:
+            raw_path_text = backup_folder.group("path").strip()
+            resolved_path = self._extract_known_path(raw_path_text)
+            # _extract_known_path silently falls back to Path.cwd() when it
+            # recognizes nothing specific - for a backup (which can compress
+            # gigabytes) that meant "backup my thesis" archived the entire
+            # AGI-System repo root with no warning. Only accept a cwd result
+            # when the user actually said so; otherwise fall through so
+            # Brain/clarify can ask for a real target.
+            explicit_cwd_reference = any(
+                kw in raw_path_text.lower() for kw in ("current folder", "current directory", "this folder", "here")
+            )
+            if resolved_path == str(Path.cwd()) and not explicit_cwd_reference:
+                return None
             return {
                 "type": "backup_folder",
-                "path": self._extract_known_path(backup_folder.group("path").strip()),
+                "path": resolved_path,
                 "backup_name": (backup_folder.group("name") or "").strip() or None,
             }
 
@@ -1458,7 +2038,7 @@ class AutonomousSystemController:
                 )
             elif site == "google":
                 target = (
-                    self.config.get("web_automation", {}).get("search_engine_url", "https://www.google.com/search?q={query}").format(query=quote_plus(query))
+                    self._get_search_engine_url_template().format(query=quote_plus(query))
                     if query
                     else "https://www.google.com"
                 )
@@ -1540,7 +2120,14 @@ class AutonomousSystemController:
                 "require_confirmation": require_confirmation,
             }
 
-        if url_target:
+        if url_target and not re.search(
+            r"\b(?:and|then)\s+(?:search|find|look up|go to|navigate|open)\b", normalized
+        ):
+            # Guarded the same way as the browser_action/web_only/navigate_only
+            # composite regexes below: without it, ANY command containing a
+            # recognizable domain (e.g. "navigate to amazon.in and search for
+            # laptops") short-circuited here first, navigating to the bare
+            # domain and silently discarding every clause after it.
             return {
                 "type": "browser_action",
                 "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
@@ -1592,28 +2179,39 @@ class AutonomousSystemController:
         )
         if web_only:
             target_text = web_only.group("target").strip()
-            # "google calendar/docs/drive..." name Google PRODUCTS, not a search
-            # verb + query; let specific intent branches handle them.
-            google_products = ("calendar", "docs", "drive", "meet", "sheets", "slides", "keep", "forms")
-            if not (web_only.group(0).lower().startswith("google ") and target_text.split() and target_text.split()[0] in google_products):
-                return {
-                    "type": "browser_action",
-                    "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
-                    "action": "search",
-                    "target": target_text,
-                }
+            # A trailing "and search"/"and then navigate"/etc clause means
+            # this is really two actions - without this guard the greedy
+            # target group swallowed the second clause whole (e.g. "search
+            # amazon and then buy the cheapest one" became one bogus query).
+            if not re.search(r"\b(?:and|then)\s+(?:search|find|look up|go to|navigate|open)\b", target_text):
+                # "google calendar/docs/drive..." name Google PRODUCTS, not a search
+                # verb + query; let specific intent branches handle them.
+                google_products = ("calendar", "docs", "drive", "meet", "sheets", "slides", "keep", "forms")
+                if not (web_only.group(0).lower().startswith("google ") and target_text.split() and target_text.split()[0] in google_products):
+                    return {
+                        "type": "browser_action",
+                        "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                        "action": "search",
+                        "target": target_text,
+                    }
 
         navigate_only = re.match(
             r"^(?:go to|navigate to|open url)\s+(?P<target>.+)$",
             normalized,
         )
         if navigate_only:
-            return {
-                "type": "browser_action",
-                "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
-                "action": "navigate",
-                "target": navigate_only.group("target").strip(),
-            }
+            target_text = navigate_only.group("target").strip()
+            # Same guard as web_only above: "navigate to amazon.in and search
+            # for laptops" was matching whole, with the greedy target group
+            # swallowing "and search for laptops" into the navigation target
+            # instead of decomposing into two real steps.
+            if not re.search(r"\b(?:and|then)\s+(?:search|find|look up|go to|navigate|open)\b", target_text):
+                return {
+                    "type": "browser_action",
+                    "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                    "action": "navigate",
+                    "target": target_text,
+                }
 
         form_fields = self._extract_form_fields(command)
         if form_fields:
@@ -1639,14 +2237,23 @@ class AutonomousSystemController:
             return {"type": "stop_voice_server"}
 
         # Phase 6: Business Agent commands
-        if any(phrase in normalized for phrase in ["create task", "add task", "new task"]):
-            return {"type": "create_task"}
-
+        #
+        # create_task, complete_task, schedule_reminder, and add_calendar_event
+        # used to have bare zero-extraction matches here ("create task" ->
+        # create_task with no title/description at all, "send email" -> no
+        # recipient/subject/body). Those intents ARE reachable through the
+        # Brain tier's business_ops tool (create_task/complete_task/
+        # calendar_event/schedule_reminder all have working handlers in
+        # _execute_business_action), which can actually extract real
+        # parameters from the sentence - so the bare shortcuts were removed
+        # in favor of letting Brain parameterize them correctly. NOTE:
+        # create_project and meeting_agenda are NOT removed despite looking
+        # similar - the tool registry lists "project"/"meeting_agenda" as
+        # selectable actions but _execute_business_action has no handler
+        # branch for either, so Brain cannot actually complete them; removing
+        # their regex shortcuts would make those two intents unreachable.
         if any(phrase in normalized for phrase in ["list tasks", "show tasks", "my tasks"]):
             return {"type": "list_tasks"}
-
-        if any(phrase in normalized for phrase in ["complete task", "finish task", "done task"]):
-            return {"type": "complete_task"}
 
         if any(phrase in normalized for phrase in ["create project", "new project", "start project"]):
             return {"type": "create_project"}
@@ -1654,14 +2261,8 @@ class AutonomousSystemController:
         if any(phrase in normalized for phrase in ["daily plan", "today's plan", "schedule today"]):
             return {"type": "daily_plan"}
 
-        if any(phrase in normalized for phrase in ["schedule reminder", "set reminder", "remind me"]):
-            return {"type": "schedule_reminder"}
-
         if any(phrase in normalized for phrase in ["meeting agenda", "agenda for"]):
             return {"type": "meeting_agenda"}
-
-        if any(phrase in normalized for phrase in ["add calendar event", "schedule event", "calendar event"]):
-            return {"type": "add_calendar_event"}
 
         if any(phrase in normalized for phrase in ["upcoming events", "calendar events", "my schedule"]):
             return {"type": "upcoming_events"}
@@ -1678,13 +2279,10 @@ class AutonomousSystemController:
         if any(phrase in normalized for phrase in ["project timeline", "project schedule", "timeline"]):
             return {"type": "project_timeline"}
 
-        if any(phrase in normalized for phrase in ["send email", "send an email", "email notification", "notify"]):
-            return {"type": "send_email"}
-
         if any(phrase in normalized for phrase in ["email template", "generate email", "draft email"]):
             return {"type": "email_template"}
 
-        if any(phrase in normalized for phrase in ["check email", "email status", "email config"]):
+        if any(phrase in normalized for phrase in ["check email", "email status"]):
             return {"type": "email_status"}
 
         if any(phrase in normalized for phrase in ["call api", "external service", "api call"]):
@@ -1730,7 +2328,12 @@ class AutonomousSystemController:
         if any(phrase in normalized for phrase in ["weather", "weather forecast", "weather api"]):
             return {"type": "weather_api"}
 
-        if any(phrase in normalized for phrase in ["news", "news api", "latest news"]):
+        # Word-boundary match: a plain substring check on "news" matched
+        # "newsletter" ("show me the latest newsletter"), wrongly claiming it
+        # as a news-API request. "news api"/"latest news" both already
+        # contain the standalone word "news", so one boundary check covers
+        # all three phrases.
+        if re.search(r"\bnews\b", normalized):
             return {"type": "news_api"}
 
         if any(phrase in normalized for phrase in ["stock", "stock price", "stock market"]):
@@ -1927,16 +2530,37 @@ class AutonomousSystemController:
             }
 
         create_file = re.match(
-            r"^(?:create|make)\s+(?:a\s+)?file(?:\s+named)?\s+(?P<name>.+)$",
+            # "called"/"titled" as well as "named" - this branch knew only
+            # "named", so "create a file called demo.txt" was saved literally
+            # as "called demo.txt". _derive_filename had already been fixed
+            # for this, but this parser never reached it.
+            r"^(?:create|make|write)\s+(?:a\s+)?(?:new\s+)?file"
+            r"(?:\s+(?:named|called|titled))?\s+(?P<name>.+?)"
+            r"(?:\s+(?:with\s+(?:the\s+)?(?:content|text)|containing|that\s+says)\s+(?P<content>.+))?$",
             normalized,
         )
         if create_file:
+            # Run the captured name through the shared deriver so any leftover
+            # filler ("called", "a", "the") is stripped in exactly one place.
+            filename = self._derive_filename(create_file.group("name").strip().strip('"'))
             return {
                 "type": "create_file",
-                "path": str(Path.cwd() / create_file.group("name").strip().strip('"')),
+                "path": str(self._documents_dir() / filename),
+                "content": (create_file.group("content") or "").strip(),
             }
 
         return None
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        """Ensure a bare domain/site token has a scheme, mirroring WebAgent._normalize_url."""
+
+        cleaned = (url or "").strip()
+        if not cleaned:
+            return cleaned
+        if cleaned.startswith(("http://", "https://")):
+            return cleaned
+        return f"https://{cleaned}"
 
     def _extract_url_from_command(self, command: str) -> Optional[str]:
         """Extract a bare URL or domain from a command string."""
@@ -2003,6 +2627,25 @@ class AutonomousSystemController:
             }
         return None
 
+    def _get_search_engine_url_template(self) -> str:
+        """Search-engine URL template: saved user preference first, config fallback.
+
+        Extends the same save_user_preference/get_user_preference pattern
+        already used for default_browser - "remember that
+        default_search_engine is bing" now changes what "search for X"
+        opens, the same way a saved default_browser already changes what
+        "open browser" launches. Accepts either a known engine name or a
+        raw "...{query}..." template.
+        """
+        preferred = self.memory.get_user_preference("default_search_engine", None)
+        if preferred:
+            preferred_key = str(preferred).strip().lower()
+            if preferred_key in self.SEARCH_ENGINE_TEMPLATES:
+                return self.SEARCH_ENGINE_TEMPLATES[preferred_key]
+            if "{query}" in str(preferred):
+                return str(preferred)
+        return self.config.get("web_automation", {}).get("search_engine_url", "https://www.google.com/search?q={query}")
+
     def _build_search_target_for_site(self, url: str, query: str) -> str:
         """Build a best-effort search URL for known site domains."""
 
@@ -2012,10 +2655,10 @@ class AutonomousSystemController:
         if "flipkart." in target:
             return f"https://www.flipkart.com/search?q={quote_plus(query)}"
         if "google." in target:
-            return self.config.get("web_automation", {}).get("search_engine_url", "https://www.google.com/search?q={query}").format(query=quote_plus(query))
+            return self._get_search_engine_url_template().format(query=quote_plus(query))
         if "bing." in target:
             return f"https://www.bing.com/search?q={quote_plus(query)}"
-        return self.config.get("web_automation", {}).get("search_engine_url", "https://www.google.com/search?q={query}").format(query=quote_plus(query))
+        return self._get_search_engine_url_template().format(query=quote_plus(query))
 
     async def _execute_directly(self, command: str, strategy: Dict[str, Any]) -> Dict[str, Any]:
         """Execute deterministic commands without invoking the council."""
@@ -2047,7 +2690,14 @@ class AutonomousSystemController:
                 step_result = {"success": False, "error": "Missing source or destination for move."}
 
         elif intent_type == "open_application":
-            step_result = self.agents["system"].open_application(intent["app"], args=intent.get("args"))
+            app_name = str(intent.get("app", "")).strip()
+            # Generic "browser" resolves to the user's saved preference
+            # (autonomy saves this when they say 'use edge from now on').
+            if app_name.lower() == "browser":
+                app_name = str(
+                    self.memory.get_user_preference("default_browser", "chrome")
+                ).strip() or "chrome"
+            step_result = self.agents["system"].open_application(app_name, args=intent.get("args"))
 
         elif intent_type == "close_application":
             step_result = self.agents["system"].close_application(intent["app"])
@@ -2293,11 +2943,11 @@ class AutonomousSystemController:
             )
 
         elif intent_type == "send_email":
-            step_result = self.agents["business"].send_email_notification(
+            step_result = self._stage_or_send_email(
                 to_email=intent.get("to_email"),
                 subject=intent.get("subject"),
                 body=intent.get("body"),
-                priority=intent.get("priority", "normal")
+                priority=intent.get("priority", "normal"),
             )
 
         elif intent_type == "email_template":
@@ -2537,6 +3187,22 @@ class AutonomousSystemController:
                 priority=intent.get("priority", 5)
             )
 
+        elif intent_type == "create_document":
+            # The direct parser can now recognise "create a document about X",
+            # which previously fell through to the Brain tier and was answered
+            # with a Google search. Route it to the real document tool.
+            topic = intent.get("topic") or intent.get("title") or ""
+            step_result = self._execute_document_action(
+                "create_document",
+                {
+                    "title": topic,
+                    "topic": topic,
+                    "content": intent.get("content") or "",
+                    "kind": intent.get("kind") or "document",
+                },
+                command,
+            )
+
         elif intent_type == "create_tenant":
             step_result = self.agents["security"].create_tenant(
                 tenant_name=intent.get("tenant_name"),
@@ -2638,9 +3304,9 @@ class AutonomousSystemController:
 
         elif intent_type == "confirm_system_command":
             pending = self.memory.recall_short_term("pending_system_command")
-            if not pending:
-                step_result = {"success": False, "error": "No pending system command to confirm."}
-            else:
+            pending_outward = self.memory.recall_short_term("pending_outward_action")
+            pending_critical = self.memory.recall_short_term("pending_critical_command")
+            if pending:
                 step_result = self.agents["system"].run_command(
                     pending.get("command", ""),
                     shell=pending.get("shell", "powershell"),
@@ -2648,16 +3314,60 @@ class AutonomousSystemController:
                 )
                 self.memory.remember_short_term("pending_system_command", None)
                 step_result["confirmed_command"] = True
+            elif pending_outward and pending_outward.get("action") == "send_email":
+                payload = pending_outward.get("payload", {})
+                step_result = self.agents["business"].send_email_notification(**payload)
+                self.memory.remember_short_term("pending_outward_action", None)
+                step_result["confirmed_action"] = "send_email"
+            elif pending_critical:
+                # Automated safety review was unavailable and the user
+                # approved anyway - re-run the original command with the
+                # gate bypassed exactly once.
+                original = pending_critical.get("command", "")
+                self.memory.remember_short_term("pending_critical_command", None)
+                self._critical_gate_bypass = original
+                try:
+                    rerun = await self.process_command(original)
+                finally:
+                    self._critical_gate_bypass = None
+                step_result = {
+                    "success": bool(rerun.get("success")),
+                    "confirmed_command": True,
+                    "message": f"Confirmed and executed: {original[:80]}",
+                    "rerun_result": rerun,
+                    **({"error": rerun.get("error")} if rerun.get("error") else {}),
+                }
+            else:
+                step_result = {"success": False, "error": "No pending system command to confirm."}
 
         elif intent_type == "cancel_system_command":
             pending = self.memory.recall_short_term("pending_system_command")
+            pending_outward = self.memory.recall_short_term("pending_outward_action")
+            pending_critical = self.memory.recall_short_term("pending_critical_command")
             self.memory.remember_short_term("pending_system_command", None)
-            step_result = {
-                "success": True,
-                "cancelled": True,
-                "command": (pending or {}).get("command"),
-                "message": "Pending system command cancelled.",
-            }
+            self.memory.remember_short_term("pending_outward_action", None)
+            self.memory.remember_short_term("pending_critical_command", None)
+            if pending_critical and not pending and not pending_outward:
+                step_result = {
+                    "success": True,
+                    "cancelled": True,
+                    "command": pending_critical.get("command"),
+                    "message": "Pending command cancelled.",
+                }
+            elif pending_outward and not pending:
+                step_result = {
+                    "success": True,
+                    "cancelled": True,
+                    "action": pending_outward.get("action"),
+                    "message": "Pending action cancelled.",
+                }
+            else:
+                step_result = {
+                    "success": True,
+                    "cancelled": True,
+                    "command": (pending or {}).get("command"),
+                    "message": "Pending system command cancelled.",
+                }
 
         elif intent_type == "system_info":
             system_info = self.agents["system"].get_system_info()
@@ -2681,7 +3391,7 @@ class AutonomousSystemController:
                 step_result = {"success": True, **vision_result}
 
         elif intent_type == "screenshot":
-            shot = self.agents["vision"].capture_screen(save=True)
+            shot = await asyncio.to_thread(self.agents["vision"].capture_screen, save=True)
             shot_path = None
             try:
                 shots_dir = Path(self.config["paths"]["data"]) / "screenshots"
@@ -2734,9 +3444,12 @@ class AutonomousSystemController:
 
         # Cybersecurity Direct Handlers (Priority 2, Task 5)
         elif intent_type == "security_port_scan":
-            step_result = self.agents["system"].scan_ports(
+            # CPU/IO-bound and can take seconds per port - off the event
+            # loop so it doesn't stall the reminders/remote-queue workers.
+            step_result = await asyncio.to_thread(
+                self.agents["system"].scan_ports,
                 intent.get("host"),
-                intent.get("ports", "common")
+                intent.get("ports", "common"),
             )
 
         elif intent_type == "security_ssl_check":
@@ -2753,10 +3466,10 @@ class AutonomousSystemController:
             step_result = self.agents["file"].restore_organization(intent.get("manifest_id"))
 
         elif intent_type == "analyze_disk_usage":
-            step_result = self.agents["file"].analyze_disk_usage(intent.get("path", "."))
+            step_result = await asyncio.to_thread(self.agents["file"].analyze_disk_usage, intent.get("path", "."))
 
         elif intent_type == "find_duplicates":
-            step_result = self.agents["file"].find_duplicate_files(intent.get("path", "."))
+            step_result = await asyncio.to_thread(self.agents["file"].find_duplicate_files, intent.get("path", "."))
 
         elif intent_type == "batch_rename_files":
             step_result = self.agents["file"].batch_rename_files(
@@ -2770,12 +3483,13 @@ class AutonomousSystemController:
             step_result = self.agents["file"].create_folder(intent["path"])
 
         elif intent_type == "create_file":
-            step_result = self.agents["file"].create_file(intent["path"])
+            step_result = self.agents["file"].create_file(intent["path"], intent.get("content", ""))
 
         else:
             step_result = {"success": False, "error": f"Unsupported direct intent: {intent_type}"}
 
         step_result.setdefault("intent", intent_type)
+        self._record_action_stats(self._agent_for_action(intent_type), intent_type, bool(step_result.get("success")))
         needs_confirmation = bool(step_result.get("needs_confirmation"))
         top_level_error = None if step_result.get("success") or needs_confirmation else step_result.get("error", "Direct execution failed")
         return {
@@ -2880,12 +3594,32 @@ class AutonomousSystemController:
         retry_result["retried"] = True
         return retry_result
 
+    def _start_task_record(self, command: str, steps_total: int) -> Optional[int]:
+        """Create a durable task record; never let a storage failure block execution."""
+        try:
+            return self.memory.create_task_record(command, steps_total)
+        except Exception as exc:
+            logger.warning("Task record creation failed without blocking execution: {}", str(exc))
+            return None
+
+    def _update_task_record(self, task_id: Optional[int], **fields):
+        if task_id is None:
+            return
+        try:
+            self.memory.update_task_record(task_id, **fields)
+        except Exception as exc:
+            logger.warning("Task record update failed without blocking execution: {}", str(exc))
+
+    def _finish_task_record(self, task_id: Optional[int], success: bool):
+        self._update_task_record(task_id, status="done" if success else "failed")
+
     async def _execute_plan(self, plan: Dict[str, Any], original_command: str) -> Dict[str, Any]:
         """Execute a council-produced action plan."""
 
         logger.info("Executing plan...")
         results = []
         action_plan = self._normalize_action_plan(plan, original_command)
+        task_id = self._start_task_record(original_command, len(action_plan))
 
         for step in action_plan:
             try:
@@ -2897,17 +3631,23 @@ class AutonomousSystemController:
                 step_result.setdefault("action", action_type)
                 step_result.setdefault("agent", step.get("agent", self._agent_for_action(action_type)))
                 results.append(step_result)
+                self._update_task_record(task_id, steps_completed=len(results))
+                if not step_result.get("success"):
+                    self._update_task_record(task_id, last_error=str(step_result.get("error") or "Step failed"))
                 await asyncio.sleep(self.execution_pause_seconds)
 
             except Exception as exc:
                 logger.error("Step execution failed: {}", str(exc))
                 results.append({"success": False, "action": action_type, "error": str(exc)})
+                self._update_task_record(task_id, steps_completed=len(results), last_error=str(exc))
 
         success_count = sum(1 for result in results if result.get("success"))
         logger.success("Execution complete: {}/{} steps succeeded", success_count, len(results))
+        overall_success = success_count == len(results) and len(results) > 0
+        self._finish_task_record(task_id, overall_success)
 
         return {
-            "success": success_count == len(results) and len(results) > 0,
+            "success": overall_success,
             "steps_completed": success_count,
             "steps_total": len(results),
             "results": results,
@@ -3117,7 +3857,223 @@ class AutonomousSystemController:
             ],
             handler=lambda action, params, context: self._execute_business_action(action, params),
         ))
+        registry.register(ToolSpec(
+            name="document_ops",
+            agent="document",
+            description=(
+                "Create real Word documents and Excel spreadsheets. "
+                "Params: title (document title), content (the body text), "
+                "path (optional file path), rows/header (spreadsheets only)."
+            ),
+            actions=["create_document", "create_word_document", "create_spreadsheet", "create_excel"],
+            handler=lambda action, params, context: self._execute_document_action(action, params, context),
+        ))
+        registry.register(ToolSpec(
+            name="analytics_ops",
+            agent="analytics",
+            description=(
+                "Report on your real tasks, projects and team: counts, completion rates, "
+                "breakdowns by priority/status/category. Params: report_type "
+                "('productivity'), metric (e.g. 'total_tasks', 'completed_tasks', "
+                "'productivity_score', 'team_size'). Reads live records - it has no "
+                "financial ledger or incident log."
+            ),
+            actions=["analytics", "report_metrics", "productivity_report", "metric"],
+            handler=lambda action, params, context: self._execute_analytics_action(action, params),
+        ))
+        registry.register(ToolSpec(
+            name="team_ops",
+            agent="business",
+            description=(
+                "Manage team members and workspaces. Params: name, email, role, skills "
+                "(add_team_member); role (list_team)."
+            ),
+            actions=["add_team_member", "list_team", "team", "assign_team_project"],
+            handler=lambda action, params, context: self._execute_team_action(action, params),
+        ))
+        registry.register(ToolSpec(
+            name="math_ops",
+            agent="calculator",
+            description=(
+                "Evaluate a single arithmetic or math expression and return the number. "
+                "Param: expression (e.g. '17/100*4500', 'sqrt(144)', 'round(mean([1,2,3]),2)'). "
+                "Use Python operator syntax: ** for powers (not ^). "
+                "Arithmetic only - it cannot run scripts, read files, or access the system."
+            ),
+            actions=["calculate", "compute", "evaluate", "math"],
+            handler=lambda action, params, context: self._execute_math_action(action, params, context),
+        ))
         return registry
+
+    def _execute_document_action(self, action_type: str, params: Dict[str, Any], context: str) -> Dict[str, Any]:
+        """Execute document/spreadsheet-generation actions routed from plans."""
+
+        from core.document_tools import create_word_document, create_spreadsheet
+
+        # Accept the key names models actually emit, not just the ones the
+        # handler was originally written against - live routing showed the
+        # model sending {"name": "notes"} for a document whose title/body
+        # the handler then never saw (audit finding H-3).
+        title = (
+            params.get("title") or params.get("name") or params.get("topic")
+            or params.get("filename") or params.get("document_name")
+        )
+        body_text = (
+            params.get("content") or params.get("body") or params.get("text")
+            or params.get("summary")
+        )
+
+        if action_type in ("create_spreadsheet", "create_excel"):
+            sheet_name = title or params.get("sheet_name") or "Sheet1"
+            path = params.get("path") or str(self._documents_dir() / f"{self._slugify_filename(sheet_name)}.xlsx")
+            return create_spreadsheet(
+                path,
+                sheet_name=sheet_name,
+                rows=params.get("rows") or [],
+                header=params.get("header"),
+            )
+
+        # create_document / create_word_document. Only fall back to the raw
+        # command text for the TITLE, never for the filename - deriving the
+        # filename from the whole sentence is what produced artifacts like
+        # "make a word document called notes with the text hello.docx".
+        sections = params.get("sections")
+        if not sections:
+            sections = [body_text] if body_text else []
+        if not title:
+            title = context or "Document"
+        filename_source = (
+            params.get("title") or params.get("name") or params.get("filename")
+            or params.get("document_name") or params.get("topic") or "document"
+        )
+        path = params.get("path") or str(self._documents_dir() / f"{self._slugify_filename(filename_source)}.docx")
+        return create_word_document(path, title=title, sections=sections)
+
+    def _documents_dir(self) -> Path:
+        """Where generated documents land by default.
+
+        Not Path.cwd() - that dropped generated files straight into the
+        project root. Uses the user's Documents folder when it exists.
+        """
+        candidate = Path.home() / "Documents"
+        try:
+            if candidate.is_dir():
+                return candidate
+        except Exception:
+            pass
+        return Path.cwd()
+
+    @staticmethod
+    def _slugify_filename(text: str) -> str:
+        slug = re.sub(r"[^a-zA-Z0-9_\- ]", "", text or "document").strip().replace(" ", "_")
+        return slug[:60] or "document"
+
+    def _execute_analytics_action(self, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Reporting over real task/project/team records.
+
+        These intents previously had no ToolSpec at all, so the Brain could
+        not select them and they depended entirely on bare phrase matching
+        with no parameter extraction (audit M-7).
+        """
+        analytics = self.agents["analytics"]
+
+        metric = params.get("metric") or params.get("name")
+        if action_type == "metric" or metric:
+            if not metric:
+                return {"success": False, "error": "Which metric? e.g. total_tasks, completed_tasks, productivity_score."}
+            return {
+                "success": True,
+                "metric": metric,
+                "value": analytics._get_metric_value(str(metric)),
+                "source": "live task/project records",
+            }
+
+        report_type = params.get("report_type") or params.get("type") or "productivity"
+        data = analytics._generate_report_data(str(report_type), params)
+        if not data.get("available", True):
+            return {"success": False, "error": data.get("reason", "No data available."), **data}
+        return {"success": True, "report_type": report_type, **data}
+
+    def _execute_team_action(self, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Team-member management routed from plans (audit M-7)."""
+        business = self.agents["business"]
+
+        if action_type in ("add_team_member",):
+            name = params.get("name") or params.get("member") or params.get("title")
+            if not name:
+                return {"success": False, "error": "A name is required to add a team member."}
+            return business.add_team_member(
+                name=name,
+                email=params.get("email"),
+                role=params.get("role", "member"),
+                skills=params.get("skills"),
+            )
+
+        if action_type in ("assign_team_project",):
+            return business.assign_team_member_to_project(
+                team_member_id=params.get("team_member_id") or params.get("member_id"),
+                project_id=params.get("project_id"),
+            )
+
+        return business.list_team_members(role=params.get("role"))
+
+    def _execute_math_action(self, action_type: str, params: Dict[str, Any], context: str) -> Dict[str, Any]:
+        """Evaluate an arithmetic/math expression (core.sandbox).
+
+        Accepts the several key names models actually emit for this. Replaces
+        the previous arbitrary-Python execution tool, which was escapable -
+        see core/sandbox.py for why that approach was abandoned entirely.
+        """
+        from core.sandbox import evaluate_expression
+
+        expression = (
+            params.get("expression") or params.get("expr") or params.get("query")
+            or params.get("code") or params.get("calculation") or params.get("input") or ""
+        )
+        if not expression:
+            return {
+                "success": False,
+                "error": "No expression provided. Pass the arithmetic to evaluate as 'expression'.",
+            }
+        return evaluate_expression(str(expression))
+
+    def _stage_or_send_email(self, to_email: str, subject: str, body: str, priority: str = "normal") -> Dict[str, Any]:
+        """Send immediately if the user has opted out of confirmation,
+        otherwise stage the send behind the existing confirm/cancel flow.
+
+        send_email reaches a real third party and is irreversible once sent
+        (flagged as S-2 in the audit: outward-facing actions had no
+        confirmation gate on any path). Reuses the same short-term-memory +
+        confirm/cancel pattern already built for dangerous shell commands
+        (pending_system_command) rather than inventing a new mechanism.
+        Opt out with: "remember that auto_confirm_email is true".
+        """
+        if bool(self.memory.get_user_preference("auto_confirm_email", False)):
+            if not self._check_unattended_action_budget():
+                return {
+                    "success": False,
+                    "error": f"Email not sent: more than {self.unattended_action_hourly_limit} unattended actions in the last hour.",
+                }
+            return self.agents["business"].send_email_notification(
+                to_email=to_email, subject=subject, body=body, priority=priority,
+            )
+
+        warning = f"This will send an email to {to_email or '(missing recipient)'} with subject '{subject or '(no subject)'}'."
+        self.memory.remember_short_term(
+            "pending_outward_action",
+            {
+                "action": "send_email",
+                "payload": {"to_email": to_email, "subject": subject, "body": body, "priority": priority},
+                "warning": warning,
+            },
+        )
+        return {
+            "success": False,
+            "needs_confirmation": True,
+            "warning": f"{warning} Type 'confirm command' to send it or 'cancel command' to discard it.",
+            "to_email": to_email,
+            "subject": subject,
+        }
 
     def _execute_business_action(self, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute business-agent actions routed from plans."""
@@ -3126,7 +4082,7 @@ class AutonomousSystemController:
         context = str(params.get("context") or params.get("description") or "")
 
         if action_type in ("send_email", "email"):
-            return business.send_email_notification(
+            return self._stage_or_send_email(
                 to_email=params.get("to_email") or params.get("target") or "",
                 subject=params.get("subject") or (params.get("query") or ""),
                 body=params.get("body") or context,
@@ -3165,21 +4121,30 @@ class AutonomousSystemController:
         rollback_actions = []
         failed = False
         error_msg = ""
+        task_id = self._start_task_record(original_command, len(decomposition.get("subtasks", [])))
 
         for subtask in decomposition.get("subtasks", []):
             action = subtask.get("action", "general")
             params = dict(subtask.get("params", {}))
 
+            # Captured BEFORE execution: a rollback that deletes a "newly
+            # created" file must never delete a file that already existed -
+            # otherwise overwriting an existing report.txt and then failing a
+            # later step deleted the user's original file on rollback.
+            target_path_before = params.get("path")
+            path_existed_before = bool(target_path_before) and Path(target_path_before).exists()
+
             if action == "create_report":
-                content = self._build_report_content(original_command, results)
-                step_result = self.agents["file"].create_file(params["path"], content)
-                step_result["report_topic"] = params.get("topic")
+                step_result = await self._build_and_save_report(
+                    original_command, params.get("topic"), params["path"], results
+                )
             else:
                 step_result = await self._route_action(action, params, subtask.get("description", original_command))
 
             step_result["subtask_id"] = subtask.get("id")
             step_result["subtask_description"] = subtask.get("description")
             results.append(step_result)
+            self._update_task_record(task_id, steps_completed=len(results))
 
             if step_result.get("success"):
                 # Register rollback actions
@@ -3188,12 +4153,16 @@ class AutonomousSystemController:
                         "type": "restore_organization",
                         "manifest_id": step_result["manifest_id"]
                     })
-                elif action == "create_file" or (action == "create" and "file" in params.get("description", "").lower()):
+                elif not path_existed_before and (
+                    action == "create_file" or (action == "create" and "file" in params.get("description", "").lower())
+                ):
                     rollback_actions.append({
                         "type": "delete_file",
                         "path": step_result.get("path") or params.get("path")
                     })
-                elif action == "create_folder" or (action == "create" and "folder" in params.get("description", "").lower()):
+                elif not path_existed_before and (
+                    action == "create_folder" or (action == "create" and "folder" in params.get("description", "").lower())
+                ):
                     rollback_actions.append({
                         "type": "delete_folder",
                         "path": step_result.get("path") or params.get("path")
@@ -3201,6 +4170,7 @@ class AutonomousSystemController:
             else:
                 failed = True
                 error_msg = step_result.get("error", "Subtask failed")
+                self._update_task_record(task_id, last_error=str(error_msg))
                 break
 
             await asyncio.sleep(self.execution_pause_seconds)
@@ -3222,8 +4192,10 @@ class AutonomousSystemController:
                     logger.error("Failed to execute rollback action: {}", str(ex))
 
         success_count = sum(1 for result in results if result.get("success"))
+        overall_success = not failed and success_count == len(results) and len(results) > 0
+        self._finish_task_record(task_id, overall_success)
         return {
-            "success": not failed and success_count == len(results) and len(results) > 0,
+            "success": overall_success,
             "steps_completed": success_count,
             "steps_total": len(decomposition.get("subtasks", [])),
             "results": results,
@@ -3231,6 +4203,41 @@ class AutonomousSystemController:
             "rollback_executed": failed and len(rollback_actions) > 0,
             "error": error_msg if failed else None
         }
+
+    def _record_action_stats(self, agent: str, intent_type: str, success: bool):
+        """Update per-agent and per-intent outcome counters.
+
+        This is the visibility layer item 6 (learning-loop closure) reads
+        from - real success/failure counts per intent type, not just the
+        tier-level totals in tier_stats.
+        """
+        intent_bucket = self.intent_stats.setdefault(intent_type or "unknown", {"calls": 0, "successes": 0})
+        intent_bucket["calls"] += 1
+        if success:
+            intent_bucket["successes"] += 1
+
+        agent_bucket = self.agent_stats.setdefault(agent or "unknown", {"calls": 0, "successes": 0})
+        agent_bucket["calls"] += 1
+        if success:
+            agent_bucket["successes"] += 1
+
+    def _check_unattended_action_budget(self) -> bool:
+        """Return True if another unattended action is within the hourly
+        budget, recording this attempt either way.
+
+        Applies to remote/email-triggered commands and outward-facing
+        actions (send_email) - the two classes of action that can run
+        without a human watching in real time, per the audit's S-2/C-2
+        findings. A ring buffer of recent timestamps, not a persisted
+        counter - it naturally resets as old entries age past an hour.
+        """
+        now = time.time()
+        cutoff = now - 3600
+        self._unattended_action_timestamps = [t for t in self._unattended_action_timestamps if t > cutoff]
+        if len(self._unattended_action_timestamps) >= self.unattended_action_hourly_limit:
+            return False
+        self._unattended_action_timestamps.append(now)
+        return True
 
     async def _route_action(self, action_type: str, params: Dict[str, Any], context: str) -> Dict[str, Any]:
         """Route an action to the most appropriate agent."""
@@ -3241,26 +4248,99 @@ class AutonomousSystemController:
             self.tool_registry = registry
 
         routed = await registry.execute(action_type.lower(), params, context)
-        if routed.get("success") or "No registered tool" not in routed.get("error", ""):
+        if routed.get("success") or "No registered tool" not in (routed.get("error") or ""):
+            self._record_action_stats(routed.get("agent", "unknown"), action_type, bool(routed.get("success")))
             return routed
 
-        return await self._execute_general_action(context, params)
+        general_result = await self._execute_general_action(context, params)
+        self._record_action_stats("general", action_type, bool(general_result.get("success")))
+        return general_result
+
+    # Words that introduce a filename, and filler that must never end up IN it.
+    _NAME_INTRO = r"(?:named|called|titled|name|title)"
+    _LEADING_FILLER = (
+        "create", "make", "new", "a", "an", "the", "file", "document", "doc",
+        "note", "text", "please", "me", "to", "for", "write", "generate",
+    )
+
+    @staticmethod
+    @staticmethod
+    def _extract_inline_content(text: str) -> str:
+        """Recover file body text embedded in the request sentence.
+
+        "create a file called notes.txt with content hello world" carries the
+        body inline; when the planner did not lift it into a content param
+        the file was written empty and still reported as a success.
+        """
+        if not text:
+            return ""
+        match = re.search(
+            r"\b(?:with\s+(?:the\s+)?(?:content|text|body)|containing|that\s+says|saying)\s+"
+            r"[\"']?(.+?)[\"']?\s*$",
+            text, re.IGNORECASE,
+        )
+        return match.group(1).strip() if match else ""
 
     @staticmethod
     def _derive_filename(text: str) -> str:
-        """Pull a plausible filename out of a natural phrase."""
+        """Pull a plausible filename out of a natural phrase.
+
+        Two real failures this had to fix:
+          "create a file called shakdown.txt with content hello world"
+              -> only "named" was recognised, so the whole sentence was
+                 truncated and the file was literally saved as
+                 "called shakdown.txt".
+          "research quantum computing and write me a report"
+              -> the model's plan text became the name:
+                 "To_create_a_structured_document.txt".
+        """
+        cls = AutonomousSystemController
         text = " ".join((text or "").strip().split())
-        match = re.search(r"named\s+([a-zA-Z0-9_\-. ]+?)(?:\s+with\s+content\s+.*)?$", text, re.IGNORECASE)
-        name = match.group(1).strip() if match else re.sub(r"[^a-zA-Z0-9_\- ]", "", text)[:32].strip()
+
+        # Prefer an explicit "called/named X" phrase.
+        match = re.search(
+            rf"\b{cls._NAME_INTRO}\s+[\"']?([a-zA-Z0-9_\-. ]+?)[\"']?"
+            r"(?:\s+(?:with|containing|that says|and)\b.*)?$",
+            text, re.IGNORECASE,
+        )
+        # Otherwise take a bare token that already looks like a filename.
+        if not match:
+            match = re.search(r"\b([a-zA-Z0-9_\-]+\.[a-zA-Z0-9]{1,5})\b", text)
+
+        name = match.group(1).strip() if match else ""
+
+        if not name:
+            name = re.sub(r"[^a-zA-Z0-9_\- ]", "", text).strip()
+            # Drop the imperative preamble so the verb never becomes the name.
+            words = [w for w in name.split() if w]
+            while words and words[0].lower() in cls._LEADING_FILLER:
+                words.pop(0)
+            name = " ".join(words[:6])[:40].strip()
+
+        # Strip any filler that survived at the front of an explicit match.
+        words = [w for w in name.split() if w]
+        while len(words) > 1 and words[0].lower() in cls._LEADING_FILLER:
+            words.pop(0)
+        name = " ".join(words)
+
         if not name:
             name = "vega_file"
-        name = name.replace(" ", "_")
+        name = re.sub(r"[^a-zA-Z0-9_\-. ]", "", name).strip().replace(" ", "_")
+        name = re.sub(r"_{2,}", "_", name).strip("_.") or "vega_file"
         if "." not in name:
             name += ".txt"
         return name
 
-    def _execute_file_action(self, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute file-related actions."""
+    async def _execute_file_action(self, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute file-related actions.
+
+        async so the two genuinely CPU-bound branches below (disk_usage,
+        duplicates - full-file hashing over potentially thousands of files)
+        can run in a thread instead of blocking the event loop; every other
+        branch here is fast enough that awaiting it directly is fine.
+        ToolRegistry.execute already awaits any awaitable handler result, so
+        this needed no change to how the tool is registered.
+        """
 
         file_agent = self.agents["file"]
 
@@ -3276,8 +4356,23 @@ class AutonomousSystemController:
             return file_agent.create_folder(params.get("path", "./new_folder"))
 
         if action_type in ("create_file",):
-            path = params.get("path") or self._derive_filename(params.get("description") or params.get("context") or "vega_note.txt")
-            return file_agent.create_file(path, params.get("content", ""))
+            description = params.get("description") or params.get("context") or ""
+            path = params.get("path") or self._derive_filename(description or "vega_note.txt")
+            content = params.get("content")
+            if content in (None, ""):
+                # The planner often puts the body in the sentence rather than
+                # in a "content" param, so files were created 0 bytes and
+                # reported as done. Recover it before writing nothing.
+                content = self._extract_inline_content(description)
+            result = file_agent.create_file(path, content or "")
+            if result.get("success") and not (content or "").strip():
+                # Be explicit rather than claiming a clean success: an empty
+                # file is almost never what the user meant.
+                result["warning"] = (
+                    f"Created {path}, but I could not work out what to put in it, "
+                    "so it is empty. Tell me the content and I will fill it."
+                )
+            return result
 
         if "organize" in action_type:
             path = params.get("path") or self._extract_known_path(params.get("description", "desktop"))
@@ -3301,10 +4396,16 @@ class AutonomousSystemController:
             )
 
         if action_type == "disk_usage":
-            return file_agent.analyze_disk_usage(params.get("path") or self._extract_known_path(params.get("description", ".")))
+            return await asyncio.to_thread(
+                file_agent.analyze_disk_usage,
+                params.get("path") or self._extract_known_path(params.get("description", ".")),
+            )
 
         if action_type == "duplicates":
-            return file_agent.find_duplicate_files(params.get("path") or self._extract_known_path(params.get("description", ".")))
+            return await asyncio.to_thread(
+                file_agent.find_duplicate_files,
+                params.get("path") or self._extract_known_path(params.get("description", ".")),
+            )
 
         if action_type == "restore":
             return file_agent.restore_organization(params.get("manifest_id"))
@@ -3382,7 +4483,22 @@ class AutonomousSystemController:
 
         if "command" in action_type:
             shell_name = params.get("shell", "powershell")
-            return system_agent.run_command(params.get("command", ""), shell=shell_name)
+            step_result = system_agent.run_command(params.get("command", ""), shell=shell_name)
+            if step_result.get("needs_confirmation"):
+                # Mirror _execute_directly's stash: without this, a dangerous
+                # command reached through a plan/brain step reported
+                # needs_confirmation with no way for "confirm command" to
+                # find and release it.
+                self.memory.remember_short_term(
+                    "pending_system_command",
+                    {
+                        "command": params.get("command", ""),
+                        "shell": shell_name,
+                        "warning": step_result.get("warning"),
+                        "matched_patterns": step_result.get("matched_patterns", []),
+                    },
+                )
+            return step_result
 
         system_info = system_agent.get_system_info()
         return {"success": True, **system_info}
@@ -3393,11 +4509,11 @@ class AutonomousSystemController:
         vision_agent = self.agents["vision"]
 
         if "screenshot" in action_type:
-            image = vision_agent.capture_screen()
+            image = await asyncio.to_thread(vision_agent.capture_screen)
             return {"success": image is not None, "message": "Screenshot captured"}
 
         if "ocr" in action_type:
-            text = vision_agent.extract_text_ocr()
+            text = await asyncio.to_thread(vision_agent.extract_text_ocr)
             return {"success": bool(text), "text": text[:500]}
 
         result = await vision_agent.understand_screen(params.get("question"))
@@ -3486,9 +4602,17 @@ class AutonomousSystemController:
         }
 
     def _cache_command_strategy(self, command: str, strategy: Dict[str, Any], result: Dict[str, Any]):
-        """Cache successful routing decisions."""
+        """Cache successful routing decisions.
 
-        if not result.get("success"):
+        Only the "direct" tier round-trips cleanly through the cached
+        {tier, complexity, intent} shape on replay. Brain/clarify/autonomous/
+        council strategies carry extra state (plan, params, question) that the
+        cache does not store, so caching them produces a strategy on replay
+        that silently drops that state and can execute the wrong action with
+        reported success. Restrict caching to what the schema actually covers.
+        """
+
+        if not result.get("success") or strategy.get("tier") != "direct":
             return
 
         normalized = self._normalize_command(command)
@@ -3609,26 +4733,47 @@ class AutonomousSystemController:
         }
         return fields or None
 
-    def _build_report_content(self, command: str, prior_results: List[Dict[str, Any]]) -> str:
-        """Build a simple text report from prior subtask results."""
+    async def _build_and_save_report(
+        self, command: str, topic: str, path: str, prior_results: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Synthesize a real summary from prior steps' captured text and save
+        it as a real .docx - replaces the old raw-scrape-into-a-.txt-file
+        report, which never actually read or understood anything it found.
+        """
+        from core.document_tools import create_word_document
 
-        lines = [f"VEGA Report", f"Original task: {command}", ""]
-
-        for index, result in enumerate(prior_results, start=1):
-            lines.append(f"Step {index}: {result.get('subtask_description', 'Unnamed step')}")
+        raw_chunks = []
+        sources = []
+        for result in prior_results:
             if result.get("url"):
-                lines.append(f"URL: {result['url']}")
+                sources.append(result["url"])
             if result.get("text"):
-                lines.append("Captured text:")
-                lines.append(result["text"][:1500])
-            elif result.get("message"):
-                lines.append(f"Message: {result['message']}")
-            lines.append("")
+                raw_chunks.append(result["text"])
 
-        if len(lines) <= 3:
-            lines.append("No detailed source text was captured.")
+        raw_text = "\n\n".join(raw_chunks)
+        sections: List[Any] = []
 
-        return "\n".join(lines)
+        if raw_text.strip():
+            # Fail open, same as verify_outcome: an unavailable/failing
+            # summarizer must degrade the report, never abort it.
+            try:
+                synthesis = await self.council.summarize_findings(topic or command, raw_text)
+                summary_text = synthesis.get("summary") or "Summarization was unavailable; see raw captured text below."
+            except Exception as exc:
+                logger.warning("Findings summarization failed, falling back to raw text: {}", str(exc))
+                summary_text = "Summarization was unavailable; see raw captured text below."
+        else:
+            summary_text = "No source text was captured during research, so no findings could be synthesized."
+
+        sections.append({"heading": "Summary", "body": summary_text})
+        if sources:
+            sections.append({"heading": "Sources", "body": "\n".join(sources)})
+        if raw_text.strip():
+            sections.append({"heading": "Raw captured text (for reference)", "body": raw_text[:3000]})
+
+        doc_result = create_word_document(path, title=topic or command, sections=sections)
+        doc_result["report_topic"] = topic
+        return doc_result
 
     def _learn_from_execution(self, command: str, plan: Dict[str, Any], result: Dict[str, Any]):
         """Store the execution outcome in episodic memory."""
@@ -3660,6 +4805,10 @@ class AutonomousSystemController:
                 "agents": list(self.agents.keys()),
             },
             "tier_stats": self.tier_stats,
+            "intent_stats": self.intent_stats,
+            "agent_stats": self.agent_stats,
+            "unattended_actions_last_hour": len(self._unattended_action_timestamps),
+            "unattended_action_hourly_limit": self.unattended_action_hourly_limit,
             "tools": self.get_tool_manifest(),
             "voice": self._get_voice_service_health() if self.voice_enabled else {"available": False, "enabled": False},
             "learning_stats": self.agents["learning"].get_learning_stats(),
@@ -3668,6 +4817,128 @@ class AutonomousSystemController:
             "memory_stats": self.memory.get_memory_stats(),
             "council_stats": self.council.get_stats(),
         }
+
+    async def _handle_remote_task(self, remote_queue: "RemoteQueue", remote_task: Dict[str, Any]):
+        """Execute one claimed remote task and report/reply, under the command lock."""
+
+        if not self._check_unattended_action_budget():
+            logger.warning(
+                "Remote task {} rejected: hourly unattended-action budget ({}) exceeded.",
+                remote_task["id"], self.unattended_action_hourly_limit,
+            )
+            remote_queue.mark_failed(
+                remote_task["id"],
+                f"Rejected: more than {self.unattended_action_hourly_limit} unattended actions in the last hour.",
+            )
+            print(f"[REMOTE] Rejected {remote_task['id']}: hourly budget exceeded.")
+            return
+
+        print(f"\n[REMOTE {remote_task['source']} | {remote_task['sender']}] {remote_task['command']}")
+        try:
+            async with self._command_lock:
+                remote_result = await self.process_command(remote_task["command"])
+            if remote_result.get("success"):
+                remote_queue.mark_done(
+                    remote_task["id"],
+                    str(remote_result.get("response") or "Task completed successfully."),
+                )
+                print("[REMOTE] Done.")
+            else:
+                remote_queue.mark_failed(
+                    remote_task["id"],
+                    str(remote_result.get("error") or "Task failed."),
+                )
+                print(f"[REMOTE] Failed: {str(remote_result.get('error'))[:120]}")
+
+            # Email-sourced tasks get the result mailed back.
+            if remote_task.get("source") == "email":
+                try:
+                    summary = str(
+                        remote_result.get("response")
+                        or ("Done. " + "; ".join(
+                            str(s.get("subtask_description") or s.get("action") or "")
+                            for s in (remote_result.get("results") or []) if isinstance(s, dict)
+                        ))
+                        or remote_result.get("error")
+                        or "Completed."
+                    )
+                    status_word = "completed" if remote_result.get("success") else "failed"
+                    # Deliberate, narrow exception to the outward-action
+                    # approval gate (_stage_or_send_email): this is a status
+                    # reply to a task the user themselves submitted by email,
+                    # addressed only back to the verified allowed sender.
+                    # Staging it for confirmation would be incoherent - the
+                    # user isn't at the keyboard, which is why they emailed.
+                    # It is still budgeted, and email_listener's self-send
+                    # guard is what stops a reply becoming a new command.
+                    reply_to = remote_task.get("sender", "")
+                    allowed_senders = {
+                        str(s).strip().lower()
+                        for s in self.config.get("email", {}).get("allowed_senders", [])
+                    }
+                    if reply_to.strip().lower() not in allowed_senders:
+                        print(f"[REMOTE] Reply suppressed: {reply_to} is not an allowed sender.")
+                    else:
+                        self.agents["business"].send_email_notification(
+                            to_email=reply_to,
+                            subject=f"VEGA task {status_word}: {remote_task['command'][:60]}",
+                            body=f"Your command: {remote_task['command']}\n\nStatus: {status_word}\n\nResult:\n{summary[:1000]}",
+                        )
+                        print(f"[REMOTE] Result emailed to {reply_to}")
+                except Exception as mail_exc:
+                    print(f"[REMOTE] Reply email failed: {mail_exc}")
+        except Exception as exc:
+            remote_queue.mark_failed(remote_task["id"], f"{type(exc).__name__}: {exc}")
+            print(f"[REMOTE] Failed: {exc}")
+
+    async def _memory_maintenance_worker(self, initial_delay: float = 20.0, interval: float = 300.0):
+        """Background upkeep for episodic memory: prune, then backfill
+        embeddings for older episodes in bounded batches.
+
+        Runs in a thread so the embedding calls never block the loop, and in
+        small batches so it competes gently with real commands. Without this,
+        semantic recall could only ever see episodes recorded after the
+        feature was added (audit M-1), and the episodes table grew unbounded
+        (M-4).
+        """
+        await asyncio.sleep(initial_delay)  # let startup settle first
+        while self.running:
+            try:
+                await asyncio.to_thread(self.memory.prune_episodes)
+                # 50 per 5-minute tick left coverage at 19% of history -
+                # most recalls silently fell back to the LIKE scan (audit
+                # L-3). This runs off-loop in a thread, so a larger batch
+                # costs nothing interactive.
+                result = await asyncio.to_thread(self.memory.backfill_episode_embeddings, 300)
+                if result.get("remaining", 0) == 0 and result.get("embedded", 0) == 0:
+                    # Nothing left to do - back off to a slow heartbeat.
+                    await asyncio.sleep(interval * 4)
+                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Memory maintenance tick skipped: {}", str(exc))
+            await asyncio.sleep(interval)
+
+    async def _remote_queue_worker(self, remote_queue: "RemoteQueue", poll_interval: float = 3.0):
+        """Background task: drain the remote queue independently of the input prompt.
+
+        Previously this only ran once per input() cycle, so a remotely
+        submitted task waited for the user to finish typing before it was
+        even looked at. Runs for the life of the session; cancelled by
+        run_interactive on exit.
+        """
+        while self.running:
+            try:
+                remote_task = remote_queue.claim_next()
+                if remote_task:
+                    await self._handle_remote_task(remote_queue, remote_task)
+                    continue  # check for another queued task immediately
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Remote queue worker tick failed: {}", str(exc))
+            await asyncio.sleep(poll_interval)
 
     async def run_interactive(self):
         """Run VEGA in interactive mode with cinematic presentation."""
@@ -3679,7 +4950,7 @@ class AutonomousSystemController:
         print("=" * 60)
         print("\nGreetings. I am VEGA, your advanced local AI assistant.")
         print("I'm here to help you with tasks, answer questions, and assist with your work.")
-        
+
         if self.voice_enabled and self.voice_service_available:
             print("\nVoice control is active. Type 'voice' to speak a command, or type your command normally.")
         elif self.voice_enabled:
@@ -3687,100 +4958,156 @@ class AutonomousSystemController:
             print("Type 'start voice server' to enable voice interaction.")
         else:
             print("\nI'm ready to assist through text commands. Type 'help' for what I can do.")
-        
+
         print("\nHow may I assist you today?\n")
 
         remote_queue = RemoteQueue(Path(__file__).resolve().parent / "data" / "remote_queue.json")
 
-        while self.running:
+        # Background workers. Both require input() to be off the event loop
+        # (below) to ever actually get scheduled time - previously input()
+        # blocking the loop meant the reminders loop, once started, never
+        # ticked, and the remote queue only drained between typed commands.
+        from core.reminders import ReminderLoop
+
+        # speak= is deliberately a thread-dispatching wrapper, not
+        # _speak_text directly. ReminderLoop.check_once() is synchronous and
+        # runs inside an async task, so calling pyttsx3's runAndWait() (or
+        # winsound.PlaySound) from it froze the whole event loop - including
+        # the input prompt and the remote-queue worker - for the length of
+        # the spoken sentence. Firing a reminder must not stall the session.
+        def _speak_without_blocking(text: str):
             try:
-                # Execute remotely-submitted tasks first so the supervisor sees
-                # them happen live on this laptop.
-                while True:
-                    remote_task = remote_queue.claim_next()
-                    if not remote_task:
-                        break
-                    print(f"\n[REMOTE {remote_task['source']} | {remote_task['sender']}] {remote_task['command']}")
-                    try:
-                        remote_result = await self.process_command(remote_task["command"])
-                        if remote_result.get("success"):
-                            remote_queue.mark_done(
-                                remote_task["id"],
-                                str(remote_result.get("response") or "Task completed successfully."),
-                            )
-                            print("[REMOTE] Done.")
-                        else:
-                            remote_queue.mark_failed(
-                                remote_task["id"],
-                                str(remote_result.get("error") or "Task failed."),
-                            )
-                            print(f"[REMOTE] Failed: {str(remote_result.get('error'))[:120]}")
+                asyncio.get_running_loop().create_task(asyncio.to_thread(self._speak_text, text))
+            except RuntimeError:
+                self._speak_text(text)  # no loop running (e.g. direct unit-test call)
 
-                        # Email-sourced tasks get the result mailed back.
-                        if remote_task.get("source") == "email":
-                            try:
-                                summary = str(
-                                    remote_result.get("response")
-                                    or ("Done. " + "; ".join(
-                                        str(s.get("subtask_description") or s.get("action") or "")
-                                        for s in (remote_result.get("results") or []) if isinstance(s, dict)
-                                    ))
-                                    or remote_result.get("error")
-                                    or "Completed."
-                                )
-                                status_word = "completed" if remote_result.get("success") else "failed"
-                                self.agents["business"].send_email_notification(
-                                    to_email=remote_task.get("sender", ""),
-                                    subject=f"VEGA task {status_word}: {remote_task['command'][:60]}",
-                                    body=f"Your command: {remote_task['command']}\n\nStatus: {status_word}\n\nResult:\n{summary[:1000]}",
-                                )
-                                print(f"[REMOTE] Result emailed to {remote_task.get('sender')}")
-                            except Exception as mail_exc:
-                                print(f"[REMOTE] Reply email failed: {mail_exc}")
-                    except Exception as exc:
-                        remote_queue.mark_failed(remote_task["id"], f"{type(exc).__name__}: {exc}")
-                        print(f"[REMOTE] Failed: {exc}")
+        reminder_loop = ReminderLoop(
+            schedules_path=Path(__file__).resolve().parent / "data" / "schedules.json",
+            speak=_speak_without_blocking,
+        )
+        background_tasks = [
+            asyncio.create_task(self._remote_queue_worker(remote_queue)),
+            asyncio.create_task(reminder_loop.run()),
+            asyncio.create_task(self._memory_maintenance_worker()),
+        ]
 
-                command = input("You: ").strip()
+        try:
+            while self.running:
+                try:
+                    # input() is blocking; run it in a thread so the event
+                    # loop keeps servicing the background workers above
+                    # while waiting for the user to type.
+                    from core.console import prompt_input
 
-                if not command:
-                    continue
+                    if getattr(self, "_voice_mode", False):
+                        command = (await asyncio.to_thread(self._listen_for_voice_command) or "").strip()
+                        if not command:
+                            # Nothing heard - keep listening rather than
+                            # silently dropping back to the text prompt.
+                            continue
+                        # Echo what was heard, labelled, so the transcript
+                        # reads like a conversation instead of bare text.
+                        print(f"You (voice): {command}")
+                        if command.lower().rstrip(".!?") in ("voice off", "stop listening", "text mode", "exit voice"):
+                            self._voice_mode = False
+                            print("\nVoice mode OFF - back to typing.\n")
+                            continue
+                    else:
+                        command = (await asyncio.to_thread(prompt_input, "You: ")).strip()
 
-                if self.voice_enabled and command.lower() == "voice":
-                    command = self._listen_for_voice_command()
                     if not command:
                         continue
 
-                if command.lower() in ["exit", "quit", "bye", "goodbye", "see you"]:
-                    print("\nIt was a pleasure assisting you today. Goodbye!")
+                    if self.voice_enabled and command.lower() in ("voice", "voice on", "listen"):
+                        # Enter continuous voice mode. It used to transcribe a
+                        # single utterance and drop straight back to typing,
+                        # so "voice" had to be retyped before every spoken
+                        # command - which defeats hands-free use entirely.
+                        self._voice_mode = True
+                        print("\nVoice mode ON - speak your commands.")
+                        print("Say or type 'voice off' (or press Ctrl+C) to go back to typing.\n")
+                        continue
+
+                    if command.lower() in ["exit", "quit", "bye", "goodbye", "see you"]:
+                        print("\nIt was a pleasure assisting you today. Goodbye!")
+                        self.memory.end_session()
+                        self.running = False
+                        break
+
+                    if command.lower() in ["help", "what can you do", "capabilities"]:
+                        self._display_capabilities()
+                        continue
+
+                    if command.lower() == "status":
+                        print(json.dumps(self.get_status(), indent=2))
+                        continue
+
+                    async with self._command_lock:
+                        result = await self.process_command(command)
+                    self._display_result(result)
+                    if self.voice_enabled:
+                        # Speech synthesis blocks for the length of the
+                        # sentence - keep it off the loop.
+                        await asyncio.to_thread(self._speak_result, result)
+
+                except KeyboardInterrupt:
+                    # In voice mode Ctrl+C means "stop listening", not "quit".
+                    # Previously it tore the whole session down mid-recording and
+                    # left the terminal needing to be killed.
+                    if getattr(self, "_voice_mode", False):
+                        self._voice_mode = False
+                        print("\n\nVoice mode OFF - back to typing.\n")
+                        continue
+                    print("\n\nUnderstood. I'll conclude our session now. Take care!")
                     self.memory.end_session()
                     self.running = False
                     break
 
-                if command.lower() in ["help", "what can you do", "capabilities"]:
-                    self._display_capabilities()
-                    continue
+                except Exception as exc:
+                    detail = str(exc) or exc.__class__.__name__
+                    logger.error("Error in interactive mode ({}): {}", exc.__class__.__name__, detail)
+                    print(f"\nI encountered an issue ({exc.__class__.__name__}): {detail}")
+                    print("Let me try to help you with something else.\n")
+        finally:
+            self.running = False
+            for task in background_tasks:
+                task.cancel()
+            for task in background_tasks:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            await self.shutdown()
 
-                if command.lower() == "status":
-                    print(json.dumps(self.get_status(), indent=2))
-                    continue
+    async def shutdown(self):
+        """Release external resources held for the life of the session.
 
-                result = await self.process_command(command)
-                self._display_result(result)
-                if self.voice_enabled:
-                    self._speak_result(result)
+        BrowserDriver.stop() had no caller anywhere in the repo, so the
+        Playwright Chromium process, its Node supervisor and (with the
+        persistent profile) a locked profile directory leaked on every exit.
+        Only touches agents that were actually built - self.agents is lazy,
+        so `.keys()` reflects what exists rather than constructing more on
+        the way out.
+        """
+        try:
+            if "web" in self.agents.keys():
+                driver = getattr(self.agents["web"], "browser_driver", None)
+                if driver is not None:
+                    await driver.stop()
+                    logger.info("Browser driver stopped cleanly.")
+        except Exception as exc:
+            logger.warning("Browser driver shutdown skipped: {}", str(exc))
 
-            except KeyboardInterrupt:
-                print("\n\nUnderstood. I'll conclude our session now. Take care!")
-                self.memory.end_session()
-                self.running = False
-                break
-
-            except Exception as exc:
-                detail = str(exc) or exc.__class__.__name__
-                logger.error("Error in interactive mode ({}): {}", exc.__class__.__name__, detail)
-                print(f"\nI encountered an issue ({exc.__class__.__name__}): {detail}")
-                print("Let me try to help you with something else.\n")
+        try:
+            if "system" in self.agents.keys():
+                # Only reaps subprocesses this agent actually spawned and
+                # that have already exited - never the user's own apps.
+                system_agent = self.agents["system"]
+                for pid, proc in list(getattr(system_agent, "managed_processes", {}).items()):
+                    if proc.poll() is not None:
+                        system_agent.managed_processes.pop(pid, None)
+        except Exception as exc:
+            logger.debug("Process table cleanup skipped: {}", str(exc))
 
     def _display_capabilities(self):
         """Display available capabilities in a clean format."""
@@ -3853,7 +5180,21 @@ class AutonomousSystemController:
             tier = result.get("tier", "unknown")
             steps_completed = result.get("steps_completed", 1)
             steps_total = result.get("steps_total", 1)
-            
+
+            if result.get("outcome_mismatch"):
+                # Lead with the problem. Printing "completed successfully"
+                # above a "Heads up: that isn't what you asked for" buried
+                # the only line that mattered.
+                print("\nI did something, but I don't think it's what you asked for.")
+                if result.get("verification_warning"):
+                    print(f"  {result['verification_warning']}")
+                print("\n  What I actually did:")
+                for step_result in result.get("results", []):
+                    self._display_step_result(step_result)
+                print("\nWant me to try again differently?")
+                print()
+                return
+
             if tier == "direct":
                 print(f"\nExcellent. Task completed successfully via direct execution.")
             elif tier == "autonomous":
@@ -3862,6 +5203,12 @@ class AutonomousSystemController:
                 print(f"\nExcellent. I've completed {steps_completed} of {steps_total} steps in that sequence.")
             else:
                 print(f"\nSuccess. I've processed your request through the {tier} tier.")
+
+            # Verification is advisory (it never re-runs anything) - so when
+            # it flags a mismatch the user has to actually see it, otherwise
+            # the check may as well not exist.
+            if result.get("verification_warning"):
+                print(f"\n  Heads up: {result['verification_warning']}")
 
             # Detailed results with polished explanations
             for step_result in result.get("results", []):
@@ -3873,10 +5220,17 @@ class AutonomousSystemController:
             error = result.get("error", "Unknown error")
             recovery = result.get("recovery_suggestion", "")
             
-            print(f"\nI encountered an issue: {error}")
+            # A deliberate safety refusal is not a malfunction. Prefixing
+            # it with "I encountered an issue" made correct behaviour read
+            # as a crash, which is how the live session interpreted it.
+            if result.get("rejected"):
+                print(f"\n{error}")
+            else:
+                print(f"\nI encountered an issue: {error}")
             if recovery:
                 print(f"\n{recovery}")
-            print("\nWould you like me to try a different approach, or would you prefer to work on something else?")
+            if not result.get("rejected"):
+                print("\nWould you like me to try a different approach, or would you prefer to work on something else?")
             print()
 
     def _display_step_result(self, step_result: Dict[str, Any]):
@@ -3970,10 +5324,119 @@ class AutonomousSystemController:
         if step_result.get("url"):
             print(f"  Opened: {step_result['url']}")
 
-    def free_memory(self):
-        """Model unloading is already handled with keep_alive=0."""
+        # Generic fallback. The branches above cover 11 hardcoded keys; every
+        # other payload printed NOTHING, so "list tasks", "list team", "disk
+        # drives", "audit trail" and "show phase5 model" all ran fine, said
+        # "completed successfully", and showed the user an empty screen. A
+        # renderer that silently drops data it does not recognise makes
+        # working features look broken.
+        # Always run: duplication is prevented per-key by _NOISE_KEYS and
+        # _HANDLED_KEYS, not by skipping the whole payload. A short generic
+        # "message" used to suppress everything else, which hid the actual
+        # productivity report sitting alongside it.
+        self._display_generic_payload(step_result)
 
-        logger.info("Model unloading is handled through keep_alive=0")
+    # Keys that are bookkeeping, not results worth showing the user.
+    _NOISE_KEYS = frozenset({
+        "success", "tier", "complexity", "intent", "source", "params",
+        "action", "action_type", "step", "steps", "steps_total",
+        "steps_completed", "subtask_description", "message", "warning",
+        "url", "error", "timestamp", "executed_at", "advisory", "accepted",
+        "reason", "confidence", "raw_route", "verification_warning",
+    })
+
+    # Keys the explicit branches above already render.
+    _HANDLED_KEYS = frozenset({
+        "processes", "files", "cpu", "memory", "fields_filled",
+        "command_history", "feedback_recorded", "preference_saved",
+        "preference_rejected", "preferences", "workflow_patterns",
+        "adaptive_learning", "phase5_learning",
+        # The System Status block already prints disk and host details;
+        # without these the fallback repeated them underneath.
+        "disk", "platform", "python_version", "hostname", "boot_time",
+    })
+
+    def _printed_anything_for(self, step_result: Dict[str, Any]) -> bool:
+        """Did one of the explicit branches already show this to the user?"""
+        if not isinstance(step_result, dict):
+            return False
+        if any(k in step_result for k in self._HANDLED_KEYS):
+            return True
+        return bool(step_result.get("message") or step_result.get("url"))
+
+    def _display_generic_payload(self, step_result: Dict[str, Any]) -> None:
+        """Render an unrecognised result rather than dropping it silently."""
+        if not isinstance(step_result, dict):
+            if step_result:
+                print(f"  {step_result}")
+            return
+
+        for key, value in step_result.items():
+            # _HANDLED_KEYS too: an explicit branch above already rendered
+            # those, and printing them again gave "Files Found (1 total)"
+            # immediately followed by "Files (1)".
+            if (key in self._NOISE_KEYS or key in self._HANDLED_KEYS
+                    or value in (None, "", [], {})):
+                continue
+            label = key.replace("_", " ").title()
+
+            if isinstance(value, list):
+                print(f"\n{label} ({len(value)}):")
+                for item in value[:20]:
+                    print(f"  - {self._summarise_item(item)}")
+                if len(value) > 20:
+                    print(f"  ... and {len(value) - 20} more")
+
+            elif isinstance(value, dict):
+                print(f"\n{label}:")
+                for sub_key, sub_value in list(value.items())[:20]:
+                    if isinstance(sub_value, (dict, list)):
+                        sub_value = self._summarise_item(sub_value)
+                    print(f"  {sub_key.replace('_', ' ').title()}: {sub_value}")
+
+            elif isinstance(value, str) and ("\n" in value or len(value) > 200):
+                # A generated report, not a field value.
+                print(f"\n{label}:")
+                for line in value.splitlines()[:40]:
+                    print(f"  {line}")
+
+            else:
+                print(f"  {label}: {value}")
+
+    @staticmethod
+    def _summarise_item(item: Any) -> str:
+        """One readable line for a list/dict entry."""
+        if isinstance(item, dict):
+            # Prefer the fields a person actually wants to see.
+            # "id" last: a bare UUID is the least useful thing to show a
+            # person. The audit trail rendered as a column of raw GUIDs
+            # because "id" was preferred over "event_type".
+            for key in ("name", "title", "event_type", "device", "drive",
+                        "mountpoint", "description", "path", "command",
+                        "summary", "label", "id"):
+                if item.get(key):
+                    label = str(item[key])
+                    extras = [
+                        f"{k}={item[k]}" for k in ("status", "priority", "role",
+                                                   "actor", "resource_type",
+                                                   "size_gb", "percent", "free_gb")
+                        if item.get(k) not in (None, "")
+                    ][:3]
+                    return f"{label} ({', '.join(extras)})" if extras else label
+            return ", ".join(f"{k}={v}" for k, v in list(item.items())[:4])
+        if isinstance(item, list):
+            return f"[{len(item)} items]"
+        return str(item)
+
+    def free_memory(self):
+        """Models unload automatically per their configured keep_alive window
+        (council members between multi-member consultations use keep_alive=0
+        to unload immediately; single-shot calls use the configured default)."""
+
+        logger.info(
+            "Model residency is controlled by keep_alive (config default: {})",
+            self.config.get("ollama", {}).get("keep_alive", "5m"),
+        )
 
 
 async def main():
@@ -3988,13 +5451,65 @@ if __name__ == "__main__":
         from core.doctor import run as run_doctor
 
         sys.exit(run_doctor())
+
+    if "--demo" in sys.argv:
+        # A guided tour for showing the system to someone. Runs the real
+        # command path; nothing is mocked.
+        from core.showcase import run as run_showcase
+
+        async def _demo():
+            asc = AutonomousSystemController()
+            try:
+                await run_showcase(asc)
+            finally:
+                await asc.shutdown()
+
+        asyncio.run(_demo())
+        sys.exit(0)
+
+    if "--metrics" in sys.argv:
+        from core.metrics import collect, render_text
+
+        data_dir = Path(DEFAULT_CONFIG_PATH).parent.parent / "data"
+        snapshot = collect(data_dir)
+        if "--json" in sys.argv:
+            print(json.dumps(snapshot, indent=2))
+        else:
+            print(render_text(snapshot))
+        sys.exit(0)
+
+    if "--clean-data" in sys.argv:
+        # Repeated test runs wrote into the same stores the product reads,
+        # so the live analytics were computed over ~1,100 duplicate and
+        # fixture records. Dry run by default; --apply backs up first.
+        from core.data_hygiene import clean
+
+        apply_it = "--apply" in sys.argv
+        report = clean(Path(DEFAULT_CONFIG_PATH).parent.parent / "data", dry_run=not apply_it)
+
+        print()
+        print("=" * 62)
+        print("DATA CLEANUP " + ("(APPLIED)" if apply_it else "(DRY RUN - nothing changed)"))
+        print("=" * 62)
+        for filename, stats in report["files"].items():
+            if "error" in stats:
+                print(f"  {filename:24} ERROR: {stats['error']}")
+                continue
+            print(f"  {filename:24} {stats['before']:>5} -> {stats['after']:<5}"
+                  f"  junk {stats['junk_removed']:>4}, duplicates {stats['duplicates_removed']:>4}")
+        print(f"\n  records removed: {report['total_removed']}")
+        if apply_it:
+            print(f"  backup written to: {report.get('backup')}")
+        else:
+            print("\n  Nothing was changed. Re-run with --apply to do it for real:")
+            print("      python main.py --clean-data --apply")
+        print()
+        sys.exit(0)
     if "--journal" in sys.argv:
-        journal_path = Path(__file__).resolve().parent / "data" / "execution_journal.json"
-        try:
-            entries = json.loads(journal_path.read_text(encoding="utf-8"))
-        except Exception:
-            entries = []
-        tail = entries[-int(sys.argv[sys.argv.index("--journal") + 1]) if len(sys.argv) > sys.argv.index("--journal") + 1 else 15:]
+        journal_flag_idx = sys.argv.index("--journal")
+        journal_count = int(sys.argv[journal_flag_idx + 1]) if len(sys.argv) > journal_flag_idx + 1 else 15
+        memory = MemorySystem(DEFAULT_CONFIG_PATH)
+        tail = memory.get_journal_entries(journal_count)
         print("=" * 60)
         print(f"VEGA EXECUTION JOURNAL - last {len(tail)} commands")
         print("=" * 60)
@@ -4005,22 +5520,26 @@ if __name__ == "__main__":
             print(f"[{flag}] {e.get('timestamp', '')}  {str(e.get('command'))[:60]}")
             print(f"       tier={e.get('tier')} steps: {steps}{err}")
         sys.exit(0)
-    if "--reminders" in sys.argv:
-        # D-2 / task #19: background reminder loop, only when flag present.
-        from core.reminders import ReminderLoop
-
-        async def _run_with_reminders():
-            asc = AutonomousSystemController()
-            reminder_loop = ReminderLoop(
-                schedules_path=Path(__file__).resolve().parent / "data" / "schedules.json",
-                speak=asc._speak_text,
-            )
-            reminder_task = asyncio.create_task(reminder_loop.run())
-            try:
-                await asc.run_interactive()
-            finally:
-                reminder_task.cancel()
-
-        asyncio.run(_run_with_reminders())
+    if "--tasks" in sys.argv:
+        # Surfaces multi-step plans left in a non-terminal state (e.g. by a
+        # crash mid-execution). Deliberately just a viewer - see
+        # MemorySystem.get_incomplete_tasks for why these are not
+        # auto-resumed.
+        memory = MemorySystem(DEFAULT_CONFIG_PATH)
+        incomplete = memory.get_incomplete_tasks()
+        print("=" * 60)
+        print(f"VEGA INCOMPLETE TASKS - {len(incomplete)} left running")
+        print("=" * 60)
+        if not incomplete:
+            print("None. Every recorded multi-step task reached done/failed.")
+        for t in incomplete:
+            print(f"[#{t['id']}] {t['command'][:70]}")
+            print(f"    steps: {t['steps_completed']}/{t['steps_total']}  updated: {t['updated']}")
+            if t.get("last_error"):
+                print(f"    last error: {t['last_error']}")
         sys.exit(0)
+    # The reminders loop now always runs inside run_interactive itself
+    # (background_tasks, alongside the remote-queue worker) - it no longer
+    # needs a --reminders flag or a separate entry point, since input() no
+    # longer blocks the event loop that the loop needs to tick on.
     asyncio.run(main())

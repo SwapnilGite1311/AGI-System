@@ -14,6 +14,8 @@ from PIL import Image, ImageGrab
 from loguru import logger
 from ollama import AsyncClient
 
+from core.config import load_config
+
 
 class VisionAgent:
     """
@@ -25,9 +27,7 @@ class VisionAgent:
     """
 
     def __init__(self, config_path: str = "./config/settings.json"):
-        with open(config_path, "r", encoding="utf-8") as file:
-            self.config = json.load(file)
-
+        self.config = load_config(config_path)
         self.ollama = AsyncClient(host=self.config["ollama"]["host"])
         self.vision_model = self.config["llm_council"]["vision"]["model"]
 

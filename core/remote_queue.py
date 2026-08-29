@@ -5,10 +5,19 @@ the supervisor can see remote activity on-screen.
 """
 
 import json
+import os
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from core.atomic_io import FileLock, write_json_atomic
+
+
+# The lock now lives in core.atomic_io so reminders.py and business_agent
+# can share it - schedules.json had the same unguarded read-modify-write.
+_FileLock = FileLock
 
 
 class RemoteQueue:
@@ -28,7 +37,7 @@ class RemoteQueue:
         return []
 
     def _save(self, entries: List[Dict[str, Any]]):
-        self.path.write_text(json.dumps(entries[-500:], indent=2), encoding="utf-8")
+        write_json_atomic(self.path, entries[-500:])
 
     def enqueue(self, command: str, source: str = "remote", sender: str = "unknown") -> Dict[str, Any]:
         entry = {
@@ -40,9 +49,10 @@ class RemoteQueue:
             "created": datetime.now().isoformat(timespec="seconds"),
             "result_summary": None,
         }
-        entries = self._load()
-        entries.append(entry)
-        self._save(entries)
+        with _FileLock(self.path):
+            entries = self._load()
+            entries.append(entry)
+            self._save(entries)
         return entry
 
     def next_queued(self) -> Optional[Dict[str, Any]]:
@@ -53,34 +63,37 @@ class RemoteQueue:
 
     def claim_next(self) -> Optional[Dict[str, Any]]:
         """Atomically mark the oldest queued entry as executing and return it."""
-        entries = self._load()
-        for entry in entries:
-            if entry.get("status") == "queued":
-                entry["status"] = "executing"
-                entry["started"] = datetime.now().isoformat(timespec="seconds")
-                self._save(entries)
-                return entry
+        with _FileLock(self.path):
+            entries = self._load()
+            for entry in entries:
+                if entry.get("status") == "queued":
+                    entry["status"] = "executing"
+                    entry["started"] = datetime.now().isoformat(timespec="seconds")
+                    self._save(entries)
+                    return entry
         return None
 
     def mark_done(self, task_id: str, result_summary: str):
-        entries = self._load()
-        for entry in entries:
-            if entry.get("id") == task_id:
-                entry["status"] = "done"
-                entry["result_summary"] = str(result_summary)[:300]
-                entry["finished"] = datetime.now().isoformat(timespec="seconds")
-                break
-        self._save(entries)
+        with _FileLock(self.path):
+            entries = self._load()
+            for entry in entries:
+                if entry.get("id") == task_id:
+                    entry["status"] = "done"
+                    entry["result_summary"] = str(result_summary)[:300]
+                    entry["finished"] = datetime.now().isoformat(timespec="seconds")
+                    break
+            self._save(entries)
 
     def mark_failed(self, task_id: str, error: str):
-        entries = self._load()
-        for entry in entries:
-            if entry.get("id") == task_id:
-                entry["status"] = "failed"
-                entry["result_summary"] = str(error)[:300]
-                entry["finished"] = datetime.now().isoformat(timespec="seconds")
-                break
-        self._save(entries)
+        with _FileLock(self.path):
+            entries = self._load()
+            for entry in entries:
+                if entry.get("id") == task_id:
+                    entry["status"] = "failed"
+                    entry["result_summary"] = str(error)[:300]
+                    entry["finished"] = datetime.now().isoformat(timespec="seconds")
+                    break
+            self._save(entries)
 
     def recent(self, limit: int = 20) -> List[Dict[str, Any]]:
         return self._load()[-limit:]

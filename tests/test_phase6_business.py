@@ -220,14 +220,23 @@ class TestEmailAndCommunication:
     """Test email and communication features."""
 
     def test_send_email_notification_security(self, business_agent):
-        """Test that email sending requires credentials (security check)."""
+        """Email sending must refuse when no credentials are configured.
+
+        Previously this asserted failure while reading the developer's REAL
+        config - so on a machine with working Gmail credentials it did not
+        test the security path at all, it attempted an actual SMTP send to
+        test@example.com. The config is now stubbed so the test exercises
+        the intended branch and can never send mail.
+        """
+        business_agent.config = dict(business_agent.config)
+        business_agent.config["email"] = {"configured": False}
+
         result = business_agent.send_email_notification(
             to_email="test@example.com",
             subject="Test Email",
             body="Test email body"
         )
-        
-        # Should fail due to security (no credentials)
+
         assert result["success"] is False
         assert "configured" in result.get("error", "").lower() or "credentials" in result.get("error", "").lower()
 
@@ -370,25 +379,38 @@ class TestAdvancedEmailFeatures:
             error_lower = result.get("error", "").lower()
             assert any(term in error_lower for term in ["smtp", "connection", "getaddrinfo", "dns", "timeout"])
 
-    def test_send_email_with_configuration(self, business_agent):
-        """Test email sending when configured."""
-        # First configure email (will fail with dummy credentials, but tests the flow)
-        config_result = business_agent.configure_email(
-            smtp_server="smtp.example.com",
-            smtp_port=587,
-            email_address="test@example.com",
-            password="test_password"
-        )
-        
-        # Even if config fails, test the error handling
+    def test_send_email_with_configuration(self, business_agent, monkeypatch):
+        """Sending with unreachable SMTP settings must fail cleanly.
+
+        Uses an unroutable stub host and a patched smtplib so the test can
+        never open a real connection - it previously ran against whatever
+        credentials happened to be on the machine.
+        """
+        import smtplib
+
+        class RefusingSMTP:
+            def __init__(self, *args, **kwargs):
+                raise OSError("stubbed: refusing to open a real SMTP connection in tests")
+
+        monkeypatch.setattr(smtplib, "SMTP", RefusingSMTP)
+
+        business_agent.config = dict(business_agent.config)
+        business_agent.config["email"] = {
+            "configured": True,
+            "smtp_server": "smtp.invalid.test",
+            "smtp_port": 587,
+            "email_address": "test@example.com",
+            "password": "not-a-real-password",
+        }
+
         send_result = business_agent.send_email_notification(
             to_email="recipient@example.com",
             subject="Test Email",
             body="This is a test email"
         )
-        
-        # Should fail due to no valid configuration
+
         assert send_result["success"] is False
+        assert send_result.get("error")
 
 
 class TestMultiPlatformCalendar:

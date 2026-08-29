@@ -11,11 +11,18 @@ async def main():
     from main import AutonomousSystemController
 
     asc = AutonomousSystemController()
+    # Expected tiers reflect the Brain v2 architecture: the intent router
+    # (tier "brain") is now the primary path for medium/complex unparsed
+    # commands, superseding the older single_model/sequential council path
+    # for everything except critical-complexity commands. Multi-clause
+    # commands that autonomy claims before the decomposer sees them (e.g.
+    # "navigate") still execute as a real multi-step decomposition under the
+    # "autonomous" tier label - see core/autonomy.py's clause_split strategy.
     battery = [
         ("show system info", "direct"),
         ("hello", "conversation"),
-        ("suggest me laptops under 100000", "single_model"),
-        ("navigate to amazon.in and search for laptops", "sequential"),
+        ("suggest me laptops under 100000", "brain"),
+        ("navigate to amazon.in and search for laptops", "autonomous"),
     ]
     results = []
     for cmd, expected_tier in battery:

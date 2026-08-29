@@ -46,18 +46,21 @@
     "timeout": 120,
     "max_retries": 3,
     "max_loaded_models": 1,
-    "keep_alive": "5m",
+    "keep_alive": "30m",
     "fallback_chain": [
       "gemma2:2b",
       "tinyllama:latest"
     ],
-    "num_gpu": 0
+    "num_gpu": 999
   },
   "vision": {
     "screenshot_interval": 2,
     "ocr_enabled": true,
     "object_detection": true,
     "tesseract_path": ""
+  },
+  "embeddings": {
+    "model": "nomic-embed-text"
   },
   "audio": {
     "voice_enabled": true,
@@ -87,7 +90,8 @@
     "driver": "playwright",
     "driver_browser": "chromium",
     "browsers_path": "",
-    "headless": false
+    "headless": false,
+    "persistent_profile": false
   },
   "learning": {
     "reinforcement_learning": true,
@@ -102,15 +106,26 @@
     "dangerous_command_action": "confirm",
     "dangerous_patterns": [
       "format ",
+      "format-volume",
       "del /f",
+      "del /q",
+      "rd /s",
       "rmdir /s",
       "rm -rf",
+      "remove-item",
+      "clear-disk",
+      "clear-content",
       "shutdown",
+      "stop-computer",
       "restart",
+      "restart-computer",
       "reg delete",
+      "reg add",
       "bcdedit",
       "diskpart",
-      "cipher /w"
+      "cipher /w",
+      "invoke-expression",
+      "iex "
     ],
     "command_timeout_seconds": 30
   },

@@ -8,6 +8,7 @@ cybersecurity tools, and advanced system queries.
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -23,6 +24,10 @@ import psutil
 import pyautogui
 from loguru import logger
 import requests
+
+from core.config import load_config, data_dir
+
+from core.atomic_io import write_json_atomic
 
 
 class SystemAgent:
@@ -58,10 +63,9 @@ class SystemAgent:
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize the system agent."""
 
-        with open(config_path, "r", encoding="utf-8") as file:
-            self.config = json.load(file)
-
-        self.app_cache_file = Path("./data/app_cache.json")
+        self.config = load_config(config_path)
+        # Project-relative, not cwd-relative (audit M-5).
+        self.app_cache_file = data_dir(config_path) / "app_cache.json"
         self.app_cache = self._load_app_cache()
         self.custom_paths = self.config.get("paths", {})
 
@@ -85,12 +89,14 @@ class SystemAgent:
 
         logger.info("System Agent initialized (enhanced)")
 
-    def __del__(self):
-        """Cleanup managed processes on destruction."""
-        self.cleanup_managed_processes()
-    
     def cleanup_managed_processes(self):
-        """Clean up all managed subprocesses."""
+        """Clean up all managed subprocesses.
+
+        Explicitly-callable only - never hooked to __del__. Entries here are
+        user-launched GUI applications (open_application), not subprocesses
+        this agent owns; terminating them on garbage collection closed the
+        user's actual browser/apps when the controller shut down.
+        """
         for pid, proc in list(self.managed_processes.items()):
             try:
                 if proc.poll() is None:  # Process is still running
@@ -115,8 +121,7 @@ class SystemAgent:
     def _save_app_cache(self):
         """Persist the app cache."""
         self.app_cache_file.parent.mkdir(exist_ok=True)
-        with open(self.app_cache_file, "w", encoding="utf-8") as file:
-            json.dump(self.app_cache, file, indent=2)
+        write_json_atomic(self.app_cache_file, self.app_cache)
 
     # ============= PROCESS MANAGEMENT =============
 
@@ -192,17 +197,32 @@ class SystemAgent:
         return []
 
     def kill_process(self, process_name: str = None, pid: int = None) -> Dict[str, Any]:
-        """Kill a process by name or PID."""
+        """Kill a process by name or PID.
+
+        Never targets this process itself, and matches names by exact stem
+        (case-insensitive, .exe-agnostic) rather than bare substring - a
+        substring match let "close python" or "close system" terminate every
+        process whose name merely contained that text, unconfirmed.
+        """
+        my_pid = os.getpid()
         try:
             if pid:
+                if pid == my_pid:
+                    return {"success": False, "error": "Refusing to terminate the VEGA process itself."}
                 proc = psutil.Process(pid)
                 proc.terminate()
                 logger.info("Killed process PID: {}", pid)
                 return {"success": True, "pid": pid}
             if process_name:
+                target = process_name.lower().strip()
+                target_stem = target[:-4] if target.endswith(".exe") else target
                 killed_count = 0
                 for proc in psutil.process_iter(["pid", "name"]):
-                    if process_name.lower() in (proc.info.get("name") or "").lower():
+                    if proc.info.get("pid") == my_pid:
+                        continue
+                    name = (proc.info.get("name") or "").lower()
+                    stem = name[:-4] if name.endswith(".exe") else name
+                    if stem == target_stem:
                         proc.terminate()
                         killed_count += 1
                 logger.info("Killed {} instances of {}", killed_count, process_name)
@@ -355,8 +375,15 @@ class SystemAgent:
                         "error": f"'{app_name}' does not look like an installed application.",
                     }
                 try:
-                    joined_args = " ".join(f'"{arg}"' for arg in (args or []))
-                    process = subprocess.Popen(f'start "" "{app_name}" {joined_args}'.strip(), shell=True)
+                    # Argument list with shell=False: each element is passed
+                    # as a single unit (Windows list2cmdline quoting), so a
+                    # model-supplied app_name containing shell metacharacters
+                    # (&, |, ;) cannot be interpreted as a command separator
+                    # the way the old f-string-into-shell=True form allowed.
+                    process = subprocess.Popen(
+                        ["cmd", "/c", "start", "", app_name, *(args or [])],
+                        shell=False,
+                    )
                     self.managed_processes[process.pid] = process
                     logger.success("Opened via start: {}", app_name)
                     return {
@@ -404,6 +431,21 @@ class SystemAgent:
 
     def start_voice_server(self, wait: bool = True, timeout: int = 15) -> Dict[str, Any]:
         """Attempt to start the voice server using the local-server path."""
+        # Idempotent: only one process can hold port 5000, so spawning a
+        # second one leaves an orphan that never binds while the health check
+        # passes against the FIRST one - reporting success for a process that
+        # did nothing. Repeated "start voice server" commands piled these up
+        # (five were found running at once), and worse, a stale server from an
+        # earlier session keeps serving old code while every new start looks
+        # like it succeeded.
+        if self.health_check_voice_server(timeout=2.0):
+            return {
+                "success": True,
+                "already_running": True,
+                "voice_service_url": self.config.get("audio", {}).get("voice_service_url"),
+                "message": "Voice server is already running; no new process started.",
+            }
+
         # local-server is a sibling of AGI-System:
         #   <root>/AGI-System/agents/system_agent.py -> parents[2] = <root>
         # Override with VOICE_SERVER_PATH env var when placed elsewhere.
@@ -549,10 +591,56 @@ class SystemAgent:
 
     # ============= COMMAND EXECUTION WITH SAFETY =============
 
+    # Verbs that destroy data regardless of the flags that follow, matched on
+    # word boundaries. The configured dangerous_patterns list is a substring
+    # check over specific flag combinations ("del /f", "del /q"), which left
+    # real holes: "del important.txt" with no flags was allowed, and both
+    # "ri" (PowerShell's alias for Remove-Item) and "erase" (cmd's alias for
+    # del) passed straight through while doing exactly the same damage.
+    DESTRUCTIVE_VERBS = (
+        # PowerShell cmdlets and their built-in aliases
+        "remove-item", "ri", "rm", "rmdir", "rd", "del", "erase",
+        "clear-content", "clear-disk", "clear-item",
+        "format-volume", "initialize-disk", "remove-partition",
+        "stop-computer", "restart-computer", "shutdown",
+        "remove-localuser", "remove-item-property", "remove-itemproperty",
+        # cmd / unix
+        "format", "diskpart", "bcdedit", "cipher",
+        # arbitrary execution
+        "invoke-expression", "iex",
+    )
+
+    # Registry writes are destructive even though the verb is "add".
+    DESTRUCTIVE_PHRASES = (
+        "reg delete", "reg add", "reg import",
+        "set-executionpolicy", "vssadmin delete",
+    )
+
     def is_dangerous_command(self, command: str) -> bool:
-        """Check if a command matches any dangerous pattern."""
-        cmd_lower = command.lower()
-        return any(pattern.lower() in cmd_lower for pattern in self.dangerous_patterns)
+        """Whether this command can destroy data or change system state.
+
+        Word-boundary matched rather than substring matched, so a bare verb
+        with no flags is caught and an alias cannot slip past by not being
+        spelled out in config. Deliberately errs toward blocking: a false
+        positive costs one confirmation prompt, a false negative costs the
+        user's files.
+        """
+        cmd_lower = (command or "").lower()
+
+        # Configured patterns still apply - this only ever adds coverage.
+        if any(pattern.lower() in cmd_lower for pattern in self.dangerous_patterns):
+            return True
+
+        if any(phrase in cmd_lower for phrase in self.DESTRUCTIVE_PHRASES):
+            return True
+
+        # A destructive verb anywhere a command could start: at the very
+        # beginning, or after a separator (| ; & newline) that begins a new
+        # statement in both PowerShell and cmd.
+        for verb in self.DESTRUCTIVE_VERBS:
+            if re.search(rf"(?:^|[|;&\n]\s*)\s*{re.escape(verb)}\b", cmd_lower):
+                return True
+        return False
 
     def is_network_call(self, command: str) -> bool:
         """Detect shell commands attempting direct network requests.
@@ -617,13 +705,23 @@ class SystemAgent:
             )
             elapsed = round(time.time() - start_time, 3)
 
+            # Cap captured output: an unbounded command (e.g. a recursive
+            # directory listing) can produce hundreds of MB inside the
+            # timeout window, which then gets stored again in command
+            # history, the execution journal, and episodic memory.
+            max_output_chars = 20000
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            truncated = len(stdout) > max_output_chars or len(stderr) > max_output_chars
             entry = {
                 "success": result.returncode == 0,
-                "output": result.stdout,
-                "error": result.stderr,
+                "output": stdout[:max_output_chars],
+                "error": stderr[:max_output_chars],
                 "return_code": result.returncode,
                 "elapsed_seconds": elapsed,
             }
+            if truncated:
+                entry["output_truncated"] = True
 
             # Track history
             self._record_command(command, shell, entry)

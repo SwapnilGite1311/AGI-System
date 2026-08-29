@@ -11,6 +11,10 @@ from pathlib import Path
 from loguru import logger
 import numpy as np
 
+from core.config import load_config
+
+from core.atomic_io import write_json_atomic
+
 
 class AdvancedAnalytics:
     """
@@ -25,11 +29,17 @@ class AdvancedAnalytics:
 
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize advanced analytics system."""
-        
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = json.load(f)
-        
-        self.analytics_path = Path("data/analytics")
+
+        self.config = load_config(config_path)
+        # Project-relative, not cwd-relative: launching from another
+        # directory used to split state across two locations (audit M-5).
+        project_root = Path(config_path).resolve().parent.parent
+        configured_data = self.config.get("paths", {}).get("data", "./data")
+        self.data_root = (
+            Path(configured_data) if Path(configured_data).is_absolute()
+            else project_root / configured_data
+        )
+        self.analytics_path = self.data_root / "analytics"
         self.analytics_path.mkdir(parents=True, exist_ok=True)
         
         self.dashboards = self._load_dashboards()
@@ -64,8 +74,7 @@ class AdvancedAnalytics:
         """Save dashboard configurations."""
         try:
             dashboards_path = self.analytics_path / "dashboards.json"
-            with open(dashboards_path, "w", encoding="utf-8") as f:
-                json.dump(self.dashboards, f, indent=2)
+            write_json_atomic(dashboards_path, self.dashboards)
         except Exception as e:
             logger.error("Failed to save dashboards: {}", str(e))
 
@@ -73,8 +82,7 @@ class AdvancedAnalytics:
         """Save report configurations."""
         try:
             reports_path = self.analytics_path / "reports.json"
-            with open(reports_path, "w", encoding="utf-8") as f:
-                json.dump(self.reports, f, indent=2)
+            write_json_atomic(reports_path, self.reports)
         except Exception as e:
             logger.error("Failed to save reports: {}", str(e))
 
@@ -209,67 +217,170 @@ class AdvancedAnalytics:
                 "refreshed_at": datetime.now().isoformat()
             }
 
+    def _load_operational_data(self) -> Dict[str, Any]:
+        """Read the real task/project/team records this system actually keeps.
+
+        These metrics used to be hardcoded constants (total_tasks: 150,
+        productivity_score: 0.85, ...) returned as though they were measured
+        - a "productivity report" that had never looked at a single task.
+        Everything below is computed from the same JSON the business agent
+        writes, so the numbers are real or the caller is told they aren't.
+
+        Cached against the source files' mtimes. Every metric, chart, table
+        and report called this independently, so a single dashboard refresh
+        re-parsed ~370KB of JSON once per widget (audit M-4).
+        """
+        sources = ("business_tasks.json", "projects.json", "team_members.json")
+
+        def _stamp(name: str):
+            try:
+                return (self.data_root / name).stat().st_mtime_ns
+            except OSError:
+                return 0
+
+        signature = tuple(_stamp(name) for name in sources)
+        cached = getattr(self, "_operational_cache", None)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+
+        def _read(name: str, default):
+            path = self.data_root / name
+            if not path.exists():
+                return default
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.warning("Analytics could not read {}: {}", name, str(exc))
+                return default
+
+        tasks_blob = _read("business_tasks.json", {})
+        tasks = tasks_blob.get("tasks", []) if isinstance(tasks_blob, dict) else (tasks_blob or [])
+        projects = _read("projects.json", [])
+        team = _read("team_members.json", [])
+        if not isinstance(projects, list):
+            projects = list(projects.values()) if isinstance(projects, dict) else []
+        if not isinstance(team, list):
+            team = list(team.values()) if isinstance(team, dict) else []
+
+        data = {"tasks": tasks, "projects": projects, "team": team}
+        # Keyed on mtime, so a write by the business agent invalidates this
+        # on the next read rather than serving stale numbers.
+        self._operational_cache = (signature, data)
+        return data
+
+    def _has_operational_data(self, data: Dict[str, Any]) -> bool:
+        return bool(data.get("tasks") or data.get("projects"))
+
     def _get_metric_value(self, metric_name: str) -> float:
-        """Get current value for a metric."""
-        
-        # Simulated metric values
+        """Current value for a metric, computed from real records."""
+
+        data = self._load_operational_data()
+        tasks = data["tasks"]
+        projects = data["projects"]
+        team = data["team"]
+
+        completed = [t for t in tasks if str(t.get("status", "")).lower() == "completed"]
+        done_projects = [p for p in projects if str(p.get("status", "")).lower() in ("completed", "done")]
+
         metrics = {
-            "total_tasks": 150,
-            "completed_tasks": 120,
-            "productivity_score": 0.85,
-            "team_efficiency": 0.78,
-            "project_completion_rate": 0.92,
-            "resource_utilization": 0.75
+            "total_tasks": float(len(tasks)),
+            "completed_tasks": float(len(completed)),
+            "open_tasks": float(len(tasks) - len(completed)),
+            "total_projects": float(len(projects)),
+            "team_size": float(len(team)),
+            "productivity_score": round(len(completed) / len(tasks), 3) if tasks else 0.0,
+            "project_completion_rate": round(len(done_projects) / len(projects), 3) if projects else 0.0,
         }
-        
         return metrics.get(metric_name, 0.0)
 
     def _get_chart_data(self, chart_type: str, data_source: str) -> Dict[str, Any]:
-        """Get data for chart visualization."""
-        
-        # Simulated chart data
-        if chart_type == "line":
-            return {
-                "labels": ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
-                "datasets": [{
-                    "label": "Productivity",
-                    "data": [65, 72, 78, 85, 82, 88]
-                }]
-            }
+        """Chart series built from real task/project records.
+
+        Previously returned invented series (a "Productivity" line of
+        65,72,78,85,82,88 and fixed quarterly bars) that never touched any
+        data. Now derived from actual records, or an explicit
+        available: False when there is nothing to chart.
+        """
+        data = self._load_operational_data()
+        if not self._has_operational_data(data):
+            return {"available": False, "reason": "No task or project records to chart yet."}
+
+        tasks = data["tasks"]
+
+        def _counts(field: str, fallback: str) -> Dict[str, int]:
+            out: Dict[str, int] = {}
+            for task in tasks:
+                key = str(task.get(field) or fallback)
+                out[key] = out.get(key, 0) + 1
+            return out
+
+        if chart_type == "pie":
+            counts = _counts("category", "general")
         elif chart_type == "bar":
-            return {
-                "labels": ["Q1", "Q2", "Q3", "Q4"],
-                "datasets": [{
-                    "label": "Projects Completed",
-                    "data": [12, 15, 18, 22]
-                }]
-            }
-        elif chart_type == "pie":
-            return {
-                "labels": ["Development", "Testing", "Design", "Management"],
-                "data": [45, 25, 20, 10]
-            }
+            counts = _counts("priority", "unspecified")
+        elif chart_type == "line":
+            per_day: Dict[str, int] = {}
+            for task in tasks:
+                completed_at = task.get("completed_at")
+                if not completed_at:
+                    continue
+                day = str(completed_at)[:10]
+                per_day[day] = per_day.get(day, 0) + 1
+            counts = dict(sorted(per_day.items())[-14:])
+            if not counts:
+                return {"available": False, "reason": "No completed tasks with timestamps to plot."}
         else:
-            return {"error": f"Unknown chart type: {chart_type}"}
+            return {"available": False, "reason": f"Unknown chart type: {chart_type}"}
+
+        return {
+            "available": True,
+            "source": "data/business_tasks.json",
+            "labels": list(counts.keys()),
+            "datasets": [{"label": data_source or chart_type, "data": list(counts.values())}],
+        }
 
     def _get_table_data(self, data_source: str) -> List[Dict[str, Any]]:
-        """Get data for table visualization."""
-        
-        # Simulated table data
+        """Table rows from real records.
+
+        Previously returned invented rows - including a fictional team of
+        "John Doe"/"Jane Smith"/"Bob Johnson" with invented task counts.
+        """
+        data = self._load_operational_data()
+
         if data_source == "projects":
             return [
-                {"id": 1, "name": "Website Redesign", "status": "In Progress", "completion": 65},
-                {"id": 2, "name": "Mobile App", "status": "Completed", "completion": 100},
-                {"id": 3, "name": "API Integration", "status": "Pending", "completion": 0}
+                {
+                    "id": p.get("id"),
+                    "name": p.get("name"),
+                    "status": p.get("status"),
+                    "tasks": len(p.get("tasks") or []),
+                }
+                for p in data["projects"][:50]
             ]
-        elif data_source == "team":
+
+        if data_source == "team":
             return [
-                {"id": 1, "name": "John Doe", "role": "Developer", "tasks_completed": 45},
-                {"id": 2, "name": "Jane Smith", "role": "Designer", "tasks_completed": 38},
-                {"id": 3, "name": "Bob Johnson", "role": "Manager", "tasks_completed": 52}
+                {
+                    "id": m.get("id"),
+                    "name": m.get("name"),
+                    "role": m.get("role"),
+                    "email": m.get("email"),
+                }
+                for m in data["team"][:50]
             ]
-        else:
-            return []
+
+        if data_source == "tasks":
+            return [
+                {
+                    "id": t.get("id"),
+                    "title": t.get("title"),
+                    "status": t.get("status"),
+                    "priority": t.get("priority"),
+                }
+                for t in data["tasks"][:50]
+            ]
+
+        return []
 
     def create_predictive_model(
         self,
@@ -393,92 +504,70 @@ class AdvancedAnalytics:
             }
 
     def _generate_report_data(self, report_type: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate data for an analytics report."""
-        
+        """Build report data from the real records this system keeps.
+
+        Every branch here previously returned hardcoded constants - a
+        "productivity report" claiming 150 tasks and an 0.85 score without
+        reading anything, and financial/operational reports inventing
+        revenue and incident figures outright. Reports now either reflect
+        real task/project/team data or say plainly that no source exists,
+        because a confidently wrong number is worse than no number.
+        """
+        data = self._load_operational_data()
+
         if report_type == "productivity":
-            return {
-                "summary": {
-                    "period": parameters.get("period", "7 days"),
-                    "total_tasks": 150,
-                    "completed_tasks": 120,
-                    "completion_rate": 0.8,
-                    "average_productivity_score": 0.85
-                },
-                "breakdown": {
-                    "by_priority": {
-                        "high": 45,
-                        "medium": 55,
-                        "low": 20
-                    },
-                    "by_team_member": {
-                        "John Doe": 32,
-                        "Jane Smith": 28,
-                        "Bob Johnson": 25
-                    }
-                },
-                "trends": {
-                    "daily_completion": [10, 12, 15, 18, 16, 20, 19],
-                    "productivity_trend": "increasing"
+            if not self._has_operational_data(data):
+                return {
+                    "available": False,
+                    "reason": "No task or project records yet - create some tasks first.",
                 }
-            }
-        
-        elif report_type == "financial":
+
+            tasks = data["tasks"]
+            completed = [t for t in tasks if str(t.get("status", "")).lower() == "completed"]
+
+            by_priority: Dict[str, int] = {}
+            by_status: Dict[str, int] = {}
+            by_category: Dict[str, int] = {}
+            for task in tasks:
+                priority = str(task.get("priority") or "unspecified")
+                status = str(task.get("status") or "unknown")
+                category = str(task.get("category") or "general")
+                by_priority[priority] = by_priority.get(priority, 0) + 1
+                by_status[status] = by_status.get(status, 0) + 1
+                by_category[category] = by_category.get(category, 0) + 1
+
             return {
+                "available": True,
+                "source": "data/business_tasks.json, data/projects.json",
                 "summary": {
-                    "period": parameters.get("period", "30 days"),
-                    "total_revenue": 150000,
-                    "total_expenses": 45000,
-                    "net_profit": 105000,
-                    "profit_margin": 0.7
+                    "period": parameters.get("period", "all recorded history"),
+                    "total_tasks": len(tasks),
+                    "completed_tasks": len(completed),
+                    "open_tasks": len(tasks) - len(completed),
+                    "completion_rate": round(len(completed) / len(tasks), 3) if tasks else 0.0,
+                    "total_projects": len(data["projects"]),
+                    "team_size": len(data["team"]),
                 },
                 "breakdown": {
-                    "by_category": {
-                        "services": 80000,
-                        "products": 50000,
-                        "subscriptions": 20000
-                    },
-                    "by_month": [45000, 52000, 53000]
+                    "by_priority": by_priority,
+                    "by_status": by_status,
+                    "by_category": dict(sorted(by_category.items(), key=lambda kv: kv[1], reverse=True)[:10]),
                 },
-                "forecasts": {
-                    "next_quarter": 180000,
-                    "annual_forecast": 650000
-                }
             }
-        
-        elif report_type == "operational":
+
+        if report_type in ("financial", "operational"):
+            # No revenue ledger and no incident log exist anywhere in this
+            # system, so there is nothing truthful to compute. Previously
+            # both fabricated a complete report.
             return {
-                "summary": {
-                    "period": parameters.get("period", "30 days"),
-                    "total_incidents": 12,
-                    "resolved_incidents": 10,
-                    "avg_resolution_time": 4.5,
-                    "uptime_percentage": 0.99
-                },
-                "breakdown": {
-                    "by_severity": {
-                        "critical": 2,
-                        "high": 4,
-                        "medium": 4,
-                        "low": 2
-                    },
-                    "by_system": {
-                        "application": 5,
-                        "infrastructure": 3,
-                        "network": 2,
-                        "database": 2
-                    }
-                },
-                "recommendations": [
-                    "Monitor database performance during peak hours",
-                    "Implement automated incident response",
-                    "Scale infrastructure based on traffic patterns"
-                ]
+                "available": False,
+                "reason": (
+                    f"No {report_type} data source is connected. This system tracks tasks, "
+                    "projects and team members - it has no ledger or incident log to report on."
+                ),
             }
-        
-        else:
-            return {
-                "error": f"Unknown report type: {report_type}"
-            }
+
+        return {"available": False, "reason": f"Unknown report type: {report_type}"}
 
     def create_real_time_monitor(
         self,

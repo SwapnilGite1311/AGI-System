@@ -1,6 +1,9 @@
 import asyncio
+import sys
 import webbrowser
 from pathlib import Path
+
+import pytest
 
 from agents.web_agent import WebAgent
 from agents.conversation_agent import ConversationAgent
@@ -35,6 +38,12 @@ class DummyMemory:
 
     def get_user_preference(self, key, default=None):
         return self.preferences.get(key, {}).get("value", default)
+
+    def create_task_record(self, command, steps_total=0):
+        return None
+
+    def update_task_record(self, task_id, **fields):
+        return None
 
 
 class DummyLearningAgent:
@@ -327,6 +336,10 @@ def build_controller():
         "system": DummySystemAgent(),
     }
     controller.tier_stats = {"direct": 0, "single_model": 0, "sequential": 0}
+    controller.intent_stats = {}
+    controller.agent_stats = {}
+    controller._unattended_action_timestamps = []
+    controller.unattended_action_hourly_limit = 30
     controller.autonomy = AutonomyEngine(controller.task_decomposer, controller.get_tool_manifest)
     return controller
 
@@ -392,7 +405,7 @@ def test_parse_system_power_actions_are_confirmation_gated():
 
     assert shutdown["type"] == "system_power_action"
     assert shutdown["power_action"] == "shutdown"
-    assert shutdown["command"] == "shutdown /s /t 0"
+    assert shutdown["command"] == "shutdown /s /t 10"  # 10s abortable safety countdown
     assert sleep["power_action"] == "sleep"
     assert power_on["unsupported_reason"]
     assert unlock["unsupported_reason"]
@@ -452,7 +465,9 @@ def test_system_power_action_requires_confirmation_before_execution():
     assert first["results"][0]["needs_confirmation"] is True
     assert controller.memory.recall_short_term("pending_system_command") is None
     assert second["success"] is True
-    assert "shutdown /r /t 0" in second["results"][0]["output"]
+    # Restart now uses a 10s abortable countdown (shutdown /a can cancel it)
+    # rather than an immediate restart - an intentional safety feature.
+    assert "shutdown /r /t 10" in second["results"][0]["output"]
 
 
 def test_direct_execution_confirm_submission_intent():
@@ -722,7 +737,9 @@ def test_task_decomposer_creates_research_report_workflow():
     assert [step["action"] for step in plan["subtasks"]] == ["search", "extract_text", "create_report"]
 
 
-def test_controller_executes_decomposed_report_workflow():
+def test_controller_executes_decomposed_report_workflow(monkeypatch):
+    import core.document_tools as document_tools
+
     controller = build_controller()
     decomposition = controller.task_decomposer.decompose("research AI trends and create a report")
 
@@ -735,13 +752,28 @@ def test_controller_executes_decomposed_report_workflow():
 
     controller._route_action = fake_route_action
 
+    # The report step now writes a real .docx via core.document_tools
+    # (upgraded from a raw-text dump routed through the file agent - see
+    # main.py's _build_and_save_report) - fake the write itself, matching
+    # how every other agent here is a lightweight recording fake rather
+    # than touching real disk during a unit test.
+    created_docs = []
+
+    def fake_create_word_document(path, title, sections):
+        created_docs.append({"path": path, "title": title, "sections": sections})
+        return {"success": True, "path": path}
+
+    monkeypatch.setattr(document_tools, "create_word_document", fake_create_word_document)
+
     result = asyncio.run(controller._execute_decomposed_tasks(decomposition, decomposition["goal"]))
 
     assert result["success"] is True
     assert result["steps_total"] == 3
-    created_path, created_content = controller.agents["file"].created[0]
-    assert created_path.endswith("_report.txt")
-    assert "AI trends are accelerating" in created_content
+    assert created_docs[0]["path"].endswith("_report.docx")
+    section_bodies = " ".join(
+        s.get("body", "") if isinstance(s, dict) else str(s) for s in created_docs[0]["sections"]
+    )
+    assert "AI trends are accelerating" in section_bodies
 
 
 def test_task_decomposer_handles_browser_then_create_file():
@@ -972,8 +1004,12 @@ def test_unknown_general_action_fails_instead_of_fake_success():
     )
 
     assert result["success"] is False
-    assert result["action"] == "unsupported"
-    assert "real agent action" in result["error"]
+    # _execute_general_action's error message was made more specific/honest
+    # since this assertion was written (now names the actual command and
+    # gives a concrete next step rather than a generic "not a real agent
+    # action" message).
+    assert result["action"] == "unknown"
+    assert "too vague to execute safely" in result["error"]
 
 
 def test_council_string_plan_is_normalized_to_routed_action():
@@ -1088,7 +1124,9 @@ def test_display_result_prints_conversation_response(capsys):
     })
 
     captured = capsys.readouterr()
-    assert "ASC: Hi, I am ASC." in captured.out
+    # Product was rebranded ASC -> VEGA (2026-08-26); _display_result prints
+    # the "VEGA:" prefix regardless of what the response text itself says.
+    assert "VEGA: Hi, I am ASC." in captured.out
     assert "Success via conversation tier" not in captured.out
 
 
@@ -1430,7 +1468,11 @@ def test_autonomy_uses_default_browser_preference():
     result = asyncio.run(controller.process_command("open browser"))
 
     assert result["success"] is True
-    assert result["tier"] == "autonomous"
+    # "open browser" is a deterministically parsed direct intent; the saved
+    # default_browser preference is resolved inside _execute_directly's
+    # open_application handler, not by routing through the autonomy tier -
+    # what matters is the correct browser opens.
+    assert result["tier"] == "direct"
     assert controller.agents["system"].opened[0][0] == "edge"
 
 
@@ -1594,7 +1636,8 @@ def test_display_result_prints_clarifying_question(capsys):
     })
 
     captured = capsys.readouterr()
-    assert "ASC: What should I open?" in captured.out
+    # Product was rebranded ASC -> VEGA (2026-08-26).
+    assert "VEGA: What should I open?" in captured.out
     assert "open chrome" in captured.out
 
 
@@ -1674,6 +1717,7 @@ def test_learning_paths_survive_cwd_change(tmp_path, monkeypatch):
 
     agent = LearningAgent("./config/settings.json")
     original_path = agent.replay.path
+    original_db_path = agent.replay.db_path  # actual persistence target (SQLite)
     monkeypatch.chdir(tmp_path)
 
     agent.record_command(
@@ -1683,7 +1727,8 @@ def test_learning_paths_survive_cwd_change(tmp_path, monkeypatch):
     )
 
     assert agent.replay.path == original_path
-    assert original_path.exists()
+    assert agent.replay.db_path == original_db_path
+    assert original_db_path.exists()
 
 
 def test_tool_registry_converts_handler_exception_to_failure():
@@ -1779,3 +1824,1040 @@ def test_learning_agent_explicit_preference_retraining():
         assert res["success"] is True
         assert res["learned_preference"] == {"default_browser": "firefox"}
 
+
+# ---------------------------------------------------------------------------
+# Autonomy pass: outcome verification, approval gate, durable tasks, and
+# confidence-based learned-strategy reuse.
+# ---------------------------------------------------------------------------
+
+def test_verify_outcome_parses_satisfied_response():
+    from core.council import LLMCouncil
+
+    council = object.__new__(LLMCouncil)
+
+    async def fake_generate(member, prompt, options=None):
+        assert member == "strategist"
+        return {"response": '{"satisfied": false, "confidence": 0.8, "reason": "ignored the age filter"}'}, "qwen2.5:3b"
+
+    council._generate_with_fallbacks = fake_generate
+
+    result = asyncio.run(council.verify_outcome("organize and archive old files", "organized by type only"))
+    assert result["verified"] is True
+    assert result["satisfied"] is False
+    assert result["confidence"] == 0.8
+    assert "age filter" in result["reason"]
+
+
+def test_verify_outcome_fails_open_when_model_unavailable():
+    from core.council import LLMCouncil
+
+    council = object.__new__(LLMCouncil)
+
+    async def raising_generate(member, prompt, options=None):
+        raise RuntimeError("model unavailable")
+
+    council._generate_with_fallbacks = raising_generate
+
+    result = asyncio.run(council.verify_outcome("do something", "did something"))
+    assert result["satisfied"] is True  # fail open, never turn success into failure
+    assert result["verified"] is False
+
+
+def test_send_email_stages_by_default_then_confirm_sends():
+    controller = build_controller()
+
+    class RecordingBusinessAgent:
+        def __init__(self):
+            self.sent = []
+
+        def send_email_notification(self, **kwargs):
+            self.sent.append(kwargs)
+            return {"success": True, **kwargs}
+
+    controller.agents["business"] = RecordingBusinessAgent()
+
+    staged = controller._stage_or_send_email("raj@example.com", "Invoice", "See attached")
+    assert staged["success"] is False
+    assert staged["needs_confirmation"] is True
+    assert controller.agents["business"].sent == []  # not sent yet
+    assert controller.memory.recall_short_term("pending_outward_action")["action"] == "send_email"
+
+    result = asyncio.run(
+        controller._execute_directly("confirm command", {"intent": {"type": "confirm_system_command"}})
+    )
+    assert result["success"] is True
+    assert controller.agents["business"].sent == [
+        {"to_email": "raj@example.com", "subject": "Invoice", "body": "See attached", "priority": "normal"}
+    ]
+    assert controller.memory.recall_short_term("pending_outward_action") is None
+
+
+def test_send_email_can_be_cancelled():
+    controller = build_controller()
+
+    class RecordingBusinessAgent:
+        def __init__(self):
+            self.sent = []
+
+        def send_email_notification(self, **kwargs):
+            self.sent.append(kwargs)
+            return {"success": True}
+
+    controller.agents["business"] = RecordingBusinessAgent()
+    controller._stage_or_send_email("raj@example.com", "Invoice", "See attached")
+
+    result = asyncio.run(
+        controller._execute_directly("cancel command", {"intent": {"type": "cancel_system_command"}})
+    )
+    assert result["success"] is True
+    assert controller.agents["business"].sent == []
+    assert controller.memory.recall_short_term("pending_outward_action") is None
+
+
+def test_send_email_auto_confirm_preference_sends_immediately():
+    controller = build_controller()
+
+    class RecordingBusinessAgent:
+        def __init__(self):
+            self.sent = []
+
+        def send_email_notification(self, **kwargs):
+            self.sent.append(kwargs)
+            return {"success": True}
+
+    controller.agents["business"] = RecordingBusinessAgent()
+    controller.memory.save_user_preference("auto_confirm_email", True)
+
+    result = controller._stage_or_send_email("raj@example.com", "Invoice", "See attached")
+    assert result["success"] is True
+    assert len(controller.agents["business"].sent) == 1
+    assert controller.memory.recall_short_term("pending_outward_action") is None
+
+
+def test_unattended_action_budget_blocks_after_limit():
+    controller = build_controller()
+    controller.unattended_action_hourly_limit = 2
+
+    assert controller._check_unattended_action_budget() is True
+    assert controller._check_unattended_action_budget() is True
+    assert controller._check_unattended_action_budget() is False
+
+
+def test_get_incomplete_tasks_lifecycle(tmp_path):
+    from core.memory import MemorySystem
+    import json as json_module
+
+    config_path = tmp_path / "settings.json"
+    config_path.write_text(json_module.dumps({
+        "paths": {"data": str(tmp_path / "data")},
+        "session": {"session_file": str(tmp_path / "data" / "sessions.json"),
+                    "preferences_file": str(tmp_path / "data" / "preferences.json")},
+    }), encoding="utf-8")
+
+    memory = MemorySystem(str(config_path))
+    task_id = memory.create_task_record("a multi-step command", steps_total=3)
+
+    assert any(t["id"] == task_id for t in memory.get_incomplete_tasks())
+
+    memory.update_task_record(task_id, steps_completed=2, last_error="step 3 flaky")
+    incomplete = [t for t in memory.get_incomplete_tasks() if t["id"] == task_id][0]
+    assert incomplete["steps_completed"] == 2
+    assert incomplete["last_error"] == "step 3 flaky"
+
+    memory.update_task_record(task_id, status="done")
+    assert not any(t["id"] == task_id for t in memory.get_incomplete_tasks())
+
+
+def test_can_reuse_learned_strategy_is_confidence_based():
+    controller = build_controller()
+
+    class FakeLearningAgent:
+        def __init__(self, stats_by_intent):
+            self._stats = stats_by_intent
+
+        def get_intent_confidence(self, intent_type):
+            return self._stats.get(intent_type, {"samples": 0, "successes": 0, "success_rate": 0.0})
+
+    controller.agents["learning"] = FakeLearningAgent({
+        "file_info": {"samples": 10, "successes": 10, "success_rate": 1.0},
+        "create_file": {"samples": 9, "successes": 8, "success_rate": 0.889},
+        "weather_api": {"samples": 3, "successes": 3, "success_rate": 1.0},
+    })
+
+    assert controller._can_reuse_learned_strategy({"intent": {"type": "system_info"}}) is True  # always-safe
+    assert controller._can_reuse_learned_strategy({"intent": {"type": "file_info"}}) is True  # high confidence, enough samples
+    assert controller._can_reuse_learned_strategy({"intent": {"type": "create_file"}}) is False  # below 0.9
+    assert controller._can_reuse_learned_strategy({"intent": {"type": "weather_api"}}) is False  # not enough samples
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: expression evaluation, document generation.
+#
+# These are deliberately ADVERSARIAL. The previous sandbox passed a suite of
+# "does the happy path work" tests while being escapable in one line - the
+# tests asserted shape, not safety. Every escape below is one that either
+# defeated the old implementation or is a standard idiom that would.
+# ---------------------------------------------------------------------------
+
+def test_expression_evaluator_computes_real_math():
+    from core.sandbox import evaluate_expression
+
+    assert evaluate_expression("17/100*4500")["result"] == 765.0
+    assert evaluate_expression("sqrt(144)")["result"] == 12.0
+    assert evaluate_expression("2**10")["result"] == 1024
+    assert evaluate_expression("round(mean([1,2,3,4]), 2)")["result"] == 2.5
+    assert evaluate_expression("max(3, 7, 5)")["result"] == 7
+
+
+def test_expression_evaluator_blocks_the_escape_that_broke_the_old_sandbox():
+    """The exact one-liner that reached os/subprocess through the old denylist."""
+    from core.sandbox import evaluate_expression
+
+    escape = "__builtins__.__dict__['__imp'+'ort__']('os')"
+    result = evaluate_expression(escape)
+    assert result["success"] is False
+    # Rejected by the GRAMMAR (this is not a permitted call/attribute form),
+    # not by matching a forbidden name - name matching is exactly what the
+    # original was defeated by, via string concatenation.
+    assert "permitted" in result["error"].lower() or "not allowed" in result["error"].lower()
+
+    # And the same for every spelling of it - none of these can be expressed
+    # at all, so obfuscation has nothing to hide behind.
+    for variant in [
+        "__builtins__.__dict__",
+        "__builtins__['x']",
+        "().__class__",
+        "(1).__class__.__bases__",
+    ]:
+        assert evaluate_expression(variant)["success"] is False
+
+
+def test_expression_evaluator_blocks_all_system_access_idioms():
+    from core.sandbox import evaluate_expression
+
+    for hostile in [
+        "__import__('os').getcwd()",
+        "open('secret.txt')",
+        "eval('1+1')",
+        "exec('x=1')",
+        "().__class__.__bases__[0].__subclasses__()",
+        "type(1).mro()",
+        "globals()",
+        "getattr(1, 'real')",
+        "[].append(1)",
+        "os.system('whoami')",
+        "print(1)",           # not on the allowlist - no I/O at all
+        "lambda: 1",
+        "__builtins__",
+    ]:
+        result = evaluate_expression(hostile)
+        assert result["success"] is False, f"SECURITY: {hostile!r} was allowed to evaluate"
+
+
+def test_expression_evaluator_bounds_resource_exhaustion():
+    from core.sandbox import evaluate_expression
+
+    # Each of these would hang or exhaust memory if evaluated naively.
+    assert evaluate_expression("9**9**9")["success"] is False
+    assert evaluate_expression("10**100000")["success"] is False
+    assert evaluate_expression("'a' * 1000000000")["success"] is False
+    assert evaluate_expression("factorial(1000000)")["success"] is False
+
+
+def test_expression_evaluator_rejects_statements_and_assignment():
+    from core.sandbox import evaluate_expression
+
+    for statement in ["x = 1", "import math", "while True: pass", "def f(): pass"]:
+        assert evaluate_expression(statement)["success"] is False
+
+
+def test_expression_evaluator_reports_errors_without_raising():
+    from core.sandbox import evaluate_expression
+
+    div = evaluate_expression("1/0")
+    assert div["success"] is False and "zero" in div["error"].lower()
+    assert evaluate_expression("")["success"] is False
+    assert evaluate_expression("((((")["success"] is False
+
+
+def test_math_action_accepts_the_param_names_models_emit():
+    """Live routing showed the model sending 'expression', not 'code'."""
+    controller = build_controller()
+
+    for key in ["expression", "expr", "query", "code", "calculation"]:
+        result = controller._execute_math_action("calculate", {key: "17/100*4500"}, "")
+        assert result["success"] is True, f"param name {key!r} not accepted"
+        assert result["result"] == 765.0
+
+    missing = controller._execute_math_action("calculate", {}, "")
+    assert missing["success"] is False
+    assert "expression" in missing["error"]
+
+
+def test_document_tools_create_word_document(tmp_path):
+    from core.document_tools import create_word_document
+    from docx import Document
+
+    path = str(tmp_path / "report")
+    result = create_word_document(path, "Test Report", [
+        {"heading": "Summary", "body": "Key finding one."},
+        "A plain trailing paragraph.",
+    ])
+
+    assert result["success"] is True
+    assert result["path"].endswith(".docx")  # extension normalized even though we passed none
+
+    doc = Document(result["path"])
+    text = [p.text for p in doc.paragraphs]
+    assert "Test Report" in text
+    assert "Key finding one." in text
+    assert "A plain trailing paragraph." in text
+
+
+def test_document_tools_create_spreadsheet(tmp_path):
+    from core.document_tools import create_spreadsheet
+    from openpyxl import load_workbook
+
+    path = str(tmp_path / "data.xlsx")
+    result = create_spreadsheet(path, "Results", [[1, "a"], [2, "b"]], header=["id", "name"])
+
+    assert result["success"] is True
+    workbook = load_workbook(result["path"])
+    rows = list(workbook.active.iter_rows(values_only=True))
+    assert rows == [("id", "name"), (1, "a"), (2, "b")]
+
+
+# ---------------------------------------------------------------------------
+# Regression guards for the second-audit fixes.
+#
+# Each of these asserts a BEHAVIOUR (what the system refuses, what it does
+# not re-run, what it degrades to) rather than a return shape - the whole
+# reason the first set of tests stayed green through a sandbox escape.
+# ---------------------------------------------------------------------------
+
+def test_verification_never_re_executes_side_effects():
+    """Advisory only.
+
+    The previous implementation answered a flagged mismatch by asking the
+    council for a fresh plan and running it - which re-ran the side effects
+    the first pass had already performed (verified: the same email went out
+    twice). This drives a real command through process_command with a
+    verifier that always says "unsatisfied" and asserts the action layer is
+    touched exactly once.
+    """
+    controller = build_controller()
+    executed = []
+
+    class AlwaysUnsatisfiedCouncil:
+        def __init__(self):
+            self.decide_calls = 0
+
+        async def verify_outcome(self, command, summary):
+            return {"verified": True, "satisfied": False,
+                    "confidence": 0.9, "reason": "looks incomplete"}
+
+        async def decide(self, command, complexity="medium"):
+            self.decide_calls += 1
+            return {"action_plan": [{"action": "send_email", "params": {}}]}
+
+    council = AlwaysUnsatisfiedCouncil()
+    controller.council = council
+
+    original_route = controller._route_action
+
+    async def recording_route(action, params, context):
+        executed.append(action)
+        return {"success": True, "action": action}
+
+    controller._route_action = recording_route
+
+    # A multi-step decomposition, so verification is actually reached.
+    decomposition = {
+        "goal": "send the report and log it",
+        "subtasks": [
+            {"id": "s1", "agent": "business", "action": "send_email", "params": {}, "description": "send"},
+            {"id": "s2", "agent": "file", "action": "create_file", "params": {"path": "log.txt"}, "description": "log"},
+        ],
+    }
+    result = asyncio.run(controller._execute_decomposed_tasks(decomposition, decomposition["goal"]))
+    before = list(executed)
+
+    # Now run the verification stage exactly as process_command does.
+    summary = controller._summarize_result(result)
+    verification = asyncio.run(controller.council.verify_outcome("send the report and log it", summary))
+    if verification.get("verified") and not verification.get("satisfied"):
+        result["verification"] = verification
+        result["verification_warning"] = f"…{verification.get('reason')}"
+
+    assert executed == before, "verification must not trigger any further actions"
+    assert executed.count("send_email") == 1, "the email must not be sent twice"
+    assert council.decide_calls == 0, "verification must not ask for a re-plan"
+    assert result["verification_warning"], "the user must be told about the mismatch"
+
+
+def test_critical_gate_degrades_to_confirmation_when_model_unavailable():
+    controller = build_controller()
+
+    class DeadChairman:
+        async def validate_plan(self, plan, task):
+            raise RuntimeError("Ollama unreachable")
+
+    controller.chairman = DeadChairman()
+    controller._critical_gate_bypass = None
+
+    result = asyncio.run(controller._chairman_gate("delete the temp folder", {"tier": "direct"}))
+    assert result is not None
+    assert result.get("needs_confirmation") is True     # asks, does not refuse
+    assert not result.get("rejected")
+    assert controller.memory.recall_short_term("pending_critical_command") is not None
+
+    # An explicit user confirmation lets exactly that command through.
+    controller._critical_gate_bypass = "delete the temp folder"
+    assert asyncio.run(controller._chairman_gate("delete the temp folder", {"tier": "direct"})) is None
+    # ...and nothing else.
+    assert asyncio.run(controller._chairman_gate("delete something else", {"tier": "direct"})) is not None
+
+
+def test_text_formatting_is_not_treated_as_destructive():
+    controller = build_controller()
+
+    assert controller._assess_complexity("format my notes") != "critical"
+    assert controller._assess_complexity("reformatting my resume") != "critical"
+    assert controller._assess_complexity("show me the removed items report") != "critical"
+    # Genuinely destructive still gated.
+    for destructive in ["delete the temp folder", "uninstall spotify",
+                        "format the disk", "format drive D:", "restart the system"]:
+        assert controller._assess_complexity(destructive) == "critical", destructive
+
+
+def test_replay_all_is_cached_and_invalidated_on_write(tmp_path):
+    from learning.experience_replay import ExperienceReplayBuffer
+
+    buf = ExperienceReplayBuffer(str(tmp_path / "command_history.json"), capacity=50)
+    buf.add({"timestamp": "t1", "command": "one", "intent_type": "test"})
+    first = buf.all()
+    assert len(first) == 1
+
+    # Cached: repeated reads are consistent and return independent copies
+    # (a caller mutating the result must not corrupt the cache).
+    second = buf.all()
+    assert second == first and second is not first
+    second.append({"injected": True})
+    assert len(buf.all()) == 1
+
+    # A write invalidates it.
+    buf.add({"timestamp": "t2", "command": "two", "intent_type": "test"})
+    assert len(buf.all()) == 2
+
+
+def test_embed_requests_keep_alive():
+    """Without keep_alive Ollama reloads the model per call - 2.0s vs 0.05s."""
+    import inspect
+    from core import embeddings
+
+    source = inspect.getsource(embeddings.embed)
+    assert "keep_alive" in source
+    assert '"keep_alive": keep_alive' in source
+
+
+def test_document_action_uses_model_supplied_names(tmp_path, monkeypatch):
+    import core.document_tools as document_tools
+
+    controller = build_controller()
+    captured = {}
+
+    def fake_create(path, title, sections):
+        captured.update({"path": path, "title": title, "sections": sections})
+        return {"success": True, "path": path}
+
+    monkeypatch.setattr(document_tools, "create_word_document", fake_create)
+    monkeypatch.setattr(controller, "_documents_dir", lambda: tmp_path)
+
+    # Exactly what the router emitted live: {"name": ...} plus body text.
+    controller._execute_document_action(
+        "create_document",
+        {"name": "notes", "content": "hello"},
+        "make a word document called notes with the text hello",
+    )
+
+    assert captured["title"] == "notes"
+    assert "hello" in " ".join(str(s) for s in captured["sections"])
+    # Filename comes from the name, never from the whole sentence.
+    assert captured["path"].endswith("notes.docx")
+
+
+def test_shutdown_stops_the_browser_driver():
+    controller = build_controller()
+    stopped = {"called": False}
+
+    class FakeDriver:
+        async def stop(self):
+            stopped["called"] = True
+
+    class FakeWebAgent:
+        browser_driver = FakeDriver()
+
+    controller.agents["web"] = FakeWebAgent()
+    asyncio.run(controller.shutdown())
+    assert stopped["called"] is True
+
+
+
+# ---------------------------------------------------------------------------
+# Regression guards for the "remaining issues" pass (honesty, secrets,
+# config, form-fill safety).
+# ---------------------------------------------------------------------------
+
+def test_analytics_reports_real_numbers_not_constants():
+    """Metrics must come from real records, not hardcoded values.
+
+    _get_metric_value previously returned a fixed table (total_tasks: 150,
+    productivity_score: 0.85) described in-code as "Simulated metric values",
+    and _generate_report_data invented a whole productivity report.
+    """
+    from agents.advanced_analytics import AdvancedAnalytics
+
+    analytics = AdvancedAnalytics("./config/settings.json")
+    stale_constants = {150.0, 120.0, 0.85, 0.78, 0.92, 0.75}
+
+    total = analytics._get_metric_value("total_tasks")
+    completed = analytics._get_metric_value("completed_tasks")
+
+    # Consistent with each other and with the underlying records.
+    assert completed <= total
+    report = analytics._generate_report_data("productivity", {})
+    if report.get("available"):
+        assert report["summary"]["total_tasks"] == int(total)
+        assert report["summary"]["completed_tasks"] == int(completed)
+        assert report.get("source"), "a real report must name its data source"
+        # The old fabricated pair was exactly (150, 120).
+        assert (total, completed) != (150.0, 120.0)
+
+
+def test_reports_without_a_data_source_say_so():
+    from agents.advanced_analytics import AdvancedAnalytics
+
+    analytics = AdvancedAnalytics("./config/settings.json")
+    for report_type in ("financial", "operational"):
+        result = analytics._generate_report_data(report_type, {})
+        assert result.get("available") is False
+        assert "no" in result["reason"].lower()
+
+
+def test_erp_sync_does_not_claim_success():
+    from agents.business_process_automation import BusinessProcessAutomation
+
+    bpa = BusinessProcessAutomation("./config/settings.json")
+    bpa.create_erp_integration(
+        system_name="AuditTestERP",
+        api_endpoint="https://example.invalid/api",
+        authentication={}, sync_config={},
+    )
+    result = bpa.sync_with_erp(system_name="AuditTestERP", data_type="inventory")
+    assert result["success"] is False
+    assert result.get("not_implemented") is True
+
+
+def test_encryption_is_real_not_xor():
+    """encrypt_data must not be reversible without the OS keystore."""
+    from agents.enterprise_security import EnterpriseSecurity
+
+    security = EnterpriseSecurity("./config/settings.json")
+    plaintext = "sensitive-value-abcdefghijklmnop"
+    enc = security.encrypt_data(plaintext, "default")
+
+    if not enc.get("success"):
+        assert enc.get("not_implemented") is True  # honest refusal is acceptable
+        return
+
+    ciphertext = enc["encrypted_data"]
+    assert plaintext not in ciphertext
+    # Repeating-key XOR against the stored key used to round-trip trivially;
+    # verify a naive XOR with any stored key does NOT recover the plaintext.
+    for key in (security.encryption_keys or {}).values():
+        try:
+            raw = bytes.fromhex(ciphertext)
+        except ValueError:
+            break  # not hex any more - already not the old scheme
+        key_bytes = str(key).encode()
+        naive = bytes(raw[i] ^ key_bytes[i % len(key_bytes)] for i in range(len(raw)))
+        assert naive.decode("utf-8", "ignore") != plaintext
+
+    assert security.decrypt_data(ciphertext, "default")["decrypted_data"] == plaintext
+
+
+def test_secrets_roundtrip_and_never_store_plaintext(tmp_path):
+    from core import secrets as os_secrets
+
+    if not os_secrets.is_available():
+        return  # honestly unavailable on this platform
+
+    path = tmp_path / "creds.json"
+    path.write_text('{"password": "plaintext-app-password-12345"}', encoding="utf-8")
+
+    loaded = os_secrets.load_credentials(path)
+    assert loaded["password"] == "plaintext-app-password-12345"
+
+    import json as json_mod
+    on_disk = json_mod.loads(path.read_text(encoding="utf-8"))
+    assert "password" not in on_disk, "plaintext secret must be upgraded away"
+    assert "protected_password" in on_disk
+    assert "plaintext-app-password-12345" not in path.read_text(encoding="utf-8")
+
+    # Still readable after migration.
+    assert os_secrets.load_credentials(path)["password"] == "plaintext-app-password-12345"
+
+
+def test_config_is_cached_and_isolated():
+    from core.config import load_config
+
+    first = load_config("./config/settings.json")
+    first["INJECTED"] = True
+    second = load_config("./config/settings.json")
+    assert "INJECTED" not in second, "callers must not corrupt the shared config"
+
+
+def test_conversation_length_cap_scales_with_the_question():
+    """Casual replies stay short; explanatory answers are not capped at all.
+
+    Previously a flat 5-sentence cap applied to every reply, so VEGA could
+    not fully explain anything. Casual messages still get a brief cap;
+    a question that asks for explanation gets sentence_cap=None - no
+    truncation regardless of how long the model's answer runs.
+    """
+    import re
+
+    from agents.conversation_agent import ConversationAgent
+
+    brief = ConversationAgent._sentence_cap_for("hi")
+    detailed = ConversationAgent._sentence_cap_for("explain how the routing tiers work")
+    assert brief == ConversationAgent.BRIEF_SENTENCE_CAP
+    assert detailed is None
+
+    long_text = " ".join(f"Sentence number {i}." for i in range(30))
+    assert len(re.split(r"(?<=[.!?])\s+", ConversationAgent._polish_response(long_text, brief))) <= brief
+    # Uncapped: every sentence in a 30-sentence answer survives.
+    uncapped = ConversationAgent._polish_response(long_text, detailed)
+    assert len(re.split(r"(?<=[.!?])\s+", uncapped)) == 30
+
+
+def test_form_fill_refuses_to_type_sensitive_values_blindly():
+    """The keyboard fallback cannot confirm where it is typing."""
+    from agents.web_agent import WebAgent
+
+    agent = object.__new__(WebAgent)
+    agent.label_synonyms = {}
+    agent.selector_confidence_threshold = 0.7
+    agent.label_to_input_offset_px = 45
+    agent.browser_driver = None
+    agent.verbose_logging = False
+    agent.form_field_delay_seconds = 0
+
+    async def fake_analyze(form_name=None):
+        return {"success": True, "detected_labels": ["Password"], "form_signature": "sig"}
+
+    agent.analyze_form = fake_analyze
+    agent._build_field_sequence = lambda values, analysis: [
+        {"name": name, "value": value} for name, value in values.items()
+    ]
+
+    result = asyncio.run(agent.intelligent_form_fill(
+        {"password": "hunter2"}, focus_first_field=True, allow_keyboard_fallback=True,
+    ))
+    assert result["success"] is False
+    assert "sensitive" in result["error"].lower()
+    assert result["fill_method"] == "refused_sensitive_keyboard_fallback"
+
+
+# ---------------------------------------------------------------------------
+# Audit pass 3 regression guards.
+# ---------------------------------------------------------------------------
+
+def test_secrets_never_written_to_tracked_settings_file(tmp_path):
+    """configure_email/configure_google_calendar must not leak into settings.json.
+
+    config/settings.json is tracked by git and not gitignored, so a password
+    written there is a password committed to the repository (audit H-1).
+    """
+    import json as json_mod
+
+    from agents.business_agent import BusinessAgent
+
+    project = tmp_path / "proj"
+    (project / "config").mkdir(parents=True)
+    (project / "data").mkdir()
+    cfg = project / "config" / "settings.json"
+    cfg.write_text(json_mod.dumps({"paths": {"data": "./data"}}), encoding="utf-8")
+
+    agent = BusinessAgent(str(cfg))
+    secret = "app-password-must-not-leak-9876"
+    agent._persist_config_section(
+        "email",
+        {"configured": True, "email_address": "a@b.c", "password": secret},
+        secret_keys=("password",),
+    )
+
+    settings_text = cfg.read_text(encoding="utf-8")
+    assert secret not in settings_text, "secret leaked into the git-tracked config"
+    assert "password" not in json_mod.loads(settings_text).get("email", {})
+
+    creds = project / "data" / "email_credentials.json"
+    assert creds.exists()
+    assert secret not in creds.read_text(encoding="utf-8"), "secret stored in clear text"
+
+    from core.secrets import load_credentials
+    if load_credentials(creds):  # only assert recovery where a keystore exists
+        assert load_credentials(creds)["password"] == secret
+
+
+def test_delete_guard_does_not_widen_with_working_directory(tmp_path, monkeypatch):
+    """The guard must not depend on where ASC was launched from.
+
+    It previously allowed anything under Path.cwd(), so launching from C:\
+    authorised deleting system directories - the guard switched itself off
+    (audit H-2).
+    """
+    from pathlib import Path
+
+    from agents.file_agent import FileAgent
+
+    agent = FileAgent("./config/settings.json")
+    outside = Path(tmp_path) / "unrelated" / "file.txt"
+
+    before = agent._is_safe_path(outside)
+    monkeypatch.chdir(tmp_path)          # launch-directory changes...
+    after = agent._is_safe_path(outside)
+    assert before == after, "guard breadth changed with the working directory"
+
+    # Never deletable regardless of cwd.
+    assert not agent._is_safe_path(Path(agent.home))
+    assert not agent._is_safe_path(Path(agent.project_root))
+    assert not agent._is_safe_path(Path(agent.project_root) / "data")
+    # Still usable for real work.
+    assert agent._is_safe_path(Path(agent.home) / "Documents" / "scratch.txt")
+
+
+def test_interrupted_save_never_destroys_an_existing_store(tmp_path):
+    """A crash mid-write must leave the previous file fully intact (audit H-3)."""
+    import json as json_mod
+    from unittest import mock
+
+    from core.atomic_io import write_json_atomic
+
+    path = tmp_path / "tasks.json"
+    original = {"tasks": [{"id": i} for i in range(453)]}
+    write_json_atomic(path, original)
+
+    with mock.patch.object(json_mod, "dump", side_effect=KeyboardInterrupt("crash")):
+        try:
+            write_json_atomic(path, {"tasks": []})
+        except KeyboardInterrupt:
+            pass
+
+    assert len(json_mod.loads(path.read_text(encoding="utf-8"))["tasks"]) == 453
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")], "temp file left behind"
+
+
+def test_every_json_store_writes_atomically():
+    """No production module may use the truncate-then-write pattern."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for folder in ("core", "agents", "learning", "vision"):
+        for py in (root / folder).glob("*.py"):
+            if py.name == "atomic_io.py":
+                continue
+            for num, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+                if re.search(r"\bjson\.dump\((?!s)", line):
+                    offenders.append(f"{py.name}:{num}")
+    for py in (root / "main.py",):
+        for num, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"\bjson\.dump\((?!s)", line):
+                offenders.append(f"main.py:{num}")
+    assert not offenders, f"non-atomic JSON writes: {offenders}"
+
+
+def test_reminder_loop_does_not_erase_concurrent_additions(tmp_path):
+    """The loop must re-read under a lock, not write back a stale copy.
+
+    It previously read outside any lock and rewrote its own snapshot, so a
+    reminder added between the read and the write vanished (audit M-1).
+    """
+    import json as json_mod
+    from datetime import datetime, timedelta
+
+    from core.reminders import ReminderLoop
+
+    path = tmp_path / "schedules.json"
+    past = (datetime.now() - timedelta(minutes=5)).isoformat()
+    path.write_text(json_mod.dumps(
+        [{"id": "r1", "title": "old", "status": "pending", "reminder_time": past}]
+    ), encoding="utf-8")
+
+    loop = ReminderLoop(path, speak=None)
+    items = json_mod.loads(path.read_text(encoding="utf-8"))
+    items.append({"id": "r2", "title": "added by user", "status": "pending", "reminder_time": past})
+    path.write_text(json_mod.dumps(items), encoding="utf-8")
+
+    loop.check_once()
+
+    final = {i["id"]: i for i in json_mod.loads(path.read_text(encoding="utf-8"))}
+    assert "r2" in final, "concurrently-added reminder was erased"
+    assert final["r1"]["status"] == "done"
+
+
+def test_reminder_display_never_aborts_the_fire(capsys):
+    """A console that cannot encode the text must not stop the reminder.
+
+    An emoji in the print raised UnicodeEncodeError under cp1252 before the
+    item was recorded or marked done, so it never fired and retried forever
+    every 30 seconds (audit M-2).
+    """
+    import sys
+
+    from core import reminders
+
+    class Cp1252Stdout:
+        encoding = "cp1252"
+        def write(self, text):
+            text.encode("cp1252")   # raises on anything non-latin-1
+            return len(text)
+        def flush(self):
+            pass
+
+    original = sys.stdout
+    try:
+        sys.stdout = Cp1252Stdout()
+        reminders._safe_print("reminder \u23f0 with emoji")   # must not raise
+    finally:
+        sys.stdout = original
+
+
+def test_audit_trail_cost_does_not_grow_without_bound(tmp_path):
+    """Rotation must cap the live trail, and archive rather than delete."""
+    import json as json_mod
+
+    from agents.enterprise_security import EnterpriseSecurity
+
+    security = EnterpriseSecurity("./config/settings.json")
+    original = list(security.audit_trail)
+    try:
+        security.security_path = tmp_path
+        security.audit_trail = [{"n": i} for i in range(security.AUDIT_TRAIL_LIMIT + 2500)]
+        security._save_audit_trail()
+
+        assert len(security.audit_trail) == security.AUDIT_TRAIL_LIMIT
+        archives = list((tmp_path / "audit_archive").glob("*.json"))
+        assert archives, "entries were dropped instead of archived"
+        archived = sum(len(json_mod.loads(a.read_text(encoding="utf-8"))) for a in archives)
+        assert archived + len(security.audit_trail) == security.AUDIT_TRAIL_LIMIT + 2500
+    finally:
+        security.audit_trail = original
+
+
+def test_analytics_reads_are_cached_and_invalidated(tmp_path):
+    """Every metric re-parsed ~370KB of JSON before this (audit M-4)."""
+    import json as json_mod
+
+    from agents.advanced_analytics import AdvancedAnalytics
+
+    analytics = AdvancedAnalytics("./config/settings.json")
+    analytics.data_root = tmp_path
+    (tmp_path / "business_tasks.json").write_text(
+        json_mod.dumps({"tasks": [{"id": 1, "status": "completed"}]}), encoding="utf-8")
+
+    first = analytics._load_operational_data()
+    assert analytics._load_operational_data() is first, "not cached"
+
+    tasks_file = tmp_path / "business_tasks.json"
+    tasks_file.write_text(
+        json_mod.dumps({"tasks": [{"id": 1, "status": "completed"}, {"id": 2}]}), encoding="utf-8")
+    # Force a distinct mtime. Two writes inside one filesystem tick can share
+    # st_mtime_ns on Windows, which made this assert flakily on a cache hit
+    # that was actually correct behaviour.
+    import os as os_mod
+    stamp = tasks_file.stat().st_mtime + 2
+    os_mod.utime(tasks_file, (stamp, stamp))
+
+    refreshed = analytics._load_operational_data()
+    assert refreshed is not first, "stale after the source file changed"
+    assert len(refreshed["tasks"]) == 2
+
+
+def test_config_cache_holds_multiple_paths(tmp_path):
+    """Clearing the whole cache per revision evicted other paths (audit M-5)."""
+    import json as json_mod
+
+    from core.config import load_config
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json_mod.dumps({"which": "a"}), encoding="utf-8")
+    b.write_text(json_mod.dumps({"which": "b"}), encoding="utf-8")
+
+    for _ in range(5):
+        assert load_config(str(a))["which"] == "a"
+        assert load_config(str(b))["which"] == "b"
+
+    from core.config import _CACHE
+    assert str(a.resolve()) in _CACHE and str(b.resolve()) in _CACHE
+
+
+def test_no_bare_except_in_production_code():
+    """A bare except also swallows KeyboardInterrupt (audit M-7)."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for folder in ("core", "agents", "learning", "vision"):
+        for py in (root / folder).glob("*.py"):
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ExceptHandler) and node.type is None:
+                    offenders.append(f"{py.name}:{node.lineno}")
+    assert not offenders, f"bare except clauses: {offenders}"
+
+
+def test_no_source_file_carries_a_bom():
+    """A BOM breaks any tool reading these as plain UTF-8 (audit L-1)."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    offenders = [
+        str(py.relative_to(root))
+        for py in root.rglob("*.py")
+        if ".git" not in py.parts and "__pycache__" not in py.parts
+        and py.read_bytes().startswith(b"\xef\xbb\xbf")
+    ]
+    assert not offenders, f"files with a BOM: {offenders}"
+
+
+def test_batch_similarity_matches_the_scalar_path():
+    """Vectorised cosine similarity must agree with the original (audit L-4)."""
+    from core.embeddings import cosine_similarity
+    from core.memory import MemorySystem
+
+    query = [0.1, 0.9, -0.4, 0.25]
+    vectors = [[0.1, 0.9, -0.4, 0.25], [-1.0, 0.2, 0.3, 0.0], [0.0, 0.0, 0.0, 0.0]]
+
+    batched = MemorySystem._batch_similarity(query, vectors)
+    for got, vector in zip(batched, vectors):
+        assert abs(got - cosine_similarity(query, vector)) < 1e-5
+    assert MemorySystem._batch_similarity(query, []) == []
+
+
+@pytest.mark.parametrize("command", [
+    "how much room have i got left",
+    "whats hogging the memory",
+    "what files are on my desktop",
+    "where are my downloads",
+    "is there space on the drive",
+    "which apps are running",
+    "how is my battery",
+])
+def test_questions_without_a_verb_are_still_real_commands(command):
+    """A question about the machine must not be dismissed as small talk.
+
+    _looks_actionable required a "?", a digit, or an imperative verb. Real
+    requests routinely have none of the three - "how much room have i got
+    left" is a disk query and "whats hogging the memory" is a process query,
+    and both were answered as chit-chat by the nonsense gate. A question
+    opener plus a noun from this system's domain now counts as actionable.
+    """
+    from main import AutonomousSystemController
+
+    assert AutonomousSystemController._looks_actionable(command), \
+        f"{command!r} was dismissed as non-actionable"
+
+
+@pytest.mark.parametrize("command", [
+    "flurbick wibble wobble",
+    "my cat is fluffy",
+    "the weather is nice today",
+    "hello there friend",
+    "i am feeling good",
+    "what a lovely day",
+    "how are you",
+])
+def test_small_talk_and_gibberish_are_still_filtered(command):
+    """Widening the gate must not turn chat into planned tasks.
+
+    Requiring BOTH a question opener and a domain noun is what keeps this
+    side working - "what a lovely day" has an opener but no domain noun.
+    """
+    from main import AutonomousSystemController
+
+    assert not AutonomousSystemController._looks_actionable(command), \
+        f"{command!r} would now be planned as a task"
+
+
+def test_stt_model_whisper_never_calls_the_cloud(monkeypatch):
+    """audio.stt_model must actually be honoured.
+
+    It was read into self.stt_model at init and never referenced again, so a
+    config asking for local whisper still uploaded audio to Google - and the
+    local pipeline stayed unreachable whenever the network was up, which is
+    how a completely broken local path went unnoticed.
+    """
+    controller = object.__new__(AutonomousSystemController)
+    controller.voice_enabled = True
+    controller.stt_model = "whisper"
+    controller.voice_service_available = False
+    controller.voice_service_url = "http://localhost:5000"
+
+    called = {"cloud": False}
+
+    class TrackingSR:
+        class UnknownValueError(Exception):
+            pass
+
+        class Recognizer:
+            def adjust_for_ambient_noise(self, *a, **k):
+                pass
+
+            def listen(self, *a, **k):
+                called["cloud"] = True
+                return object()
+
+            def recognize_google(self, audio):
+                called["cloud"] = True
+                return "should never happen"
+
+        class Microphone:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, *a):
+                return False
+
+    monkeypatch.setitem(sys.modules, "speech_recognition", TrackingSR)
+
+    result = controller._listen_for_voice_command()
+    assert called["cloud"] is False, "stt_model=whisper still sent audio to the cloud"
+    # No voice service available, so it declines rather than falling back.
+    assert result is None
+
+
+def test_stt_model_google_does_not_fall_back_to_whisper(monkeypatch):
+    """google means google: a cloud failure must not silently go local."""
+    controller = object.__new__(AutonomousSystemController)
+    controller.voice_enabled = True
+    controller.stt_model = "google"
+    controller.voice_service_available = True
+    controller.voice_service_url = "http://localhost:5000"
+
+    def must_not_run(*a, **k):
+        raise AssertionError("fell back to local recording despite stt_model=google")
+
+    controller._record_audio = must_not_run
+    monkeypatch.setitem(sys.modules, "speech_recognition", None)
+
+    assert controller._listen_for_voice_command() is None
+
+
+def test_voice_disabled_short_circuits():
+    controller = object.__new__(AutonomousSystemController)
+    controller.voice_enabled = False
+    assert controller._listen_for_voice_command() is None

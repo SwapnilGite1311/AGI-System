@@ -144,7 +144,11 @@ class TaskDecomposer:
         # 4. Template: Research & Report
         if "research" in normalized and "report" in normalized:
             topic = self._extract_topic(normalized, "research", "report")
-            report_name = f"{self._slugify(topic or 'research_report')}_report.txt"
+            # .docx, not .txt: the create_report step now synthesizes a real
+            # summary (core.council.summarize_findings) and writes a real
+            # Word document (core.document_tools) instead of dumping raw
+            # scraped page text into a plain-text file.
+            report_name = f"{self._slugify(topic or 'research_report')}_report.docx"
             return {
                 "goal": command,
                 "strategy": "research_report",

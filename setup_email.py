@@ -88,10 +88,18 @@ def main():
     config["email"]["smtp_server"] = server_in
     config["email"]["smtp_port"] = int(port_in)
     config["email"]["email_address"] = email
-    # Password stored OUTSIDE version control:
+    # Password stored OUTSIDE version control AND encrypted at rest via the
+    # OS keystore (Windows DPAPI) rather than written in clear text.
     creds_path = CONFIG_PATH.parent.parent / "data" / "email_credentials.json"
     creds_path.parent.mkdir(parents=True, exist_ok=True)
-    creds_path.write_text(json.dumps({"password": password}, indent=2), encoding="utf-8")
+    sys.path.insert(0, str(CONFIG_PATH.parent.parent))
+    from core.secrets import save_credentials, is_available
+
+    save_credentials(creds_path, {"password": password})
+    if is_available():
+        print("[OK] Password encrypted at rest using the Windows credential store.")
+    else:
+        print("[WARN] No OS keystore on this platform - password stored in clear text.")
     CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     print("\n[DONE] Email configured. VEGA can now send email on your behalf.")

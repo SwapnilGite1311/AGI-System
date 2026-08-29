@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from loguru import logger
 
+from core.atomic_io import write_json_atomic
+from core.embeddings import embed, cosine_similarity, pack_embedding, unpack_embedding
+
+from core.config import load_config
+
 
 class MemorySystem:
     """
@@ -26,12 +31,14 @@ class MemorySystem:
 
         self.project_root = Path(config_path).resolve().parent.parent
 
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = json.load(f)
-        
+        self.config = load_config(config_path)
         # Create data directories
         self.data_path = self._resolve_project_path(self.config['paths']['data'])
         self.data_path.mkdir(exist_ok=True)
+
+        embeddings_config = self.config.get("embeddings", {})
+        self.embedding_model = embeddings_config.get("model", "nomic-embed-text")
+        self.embedding_host = self.config.get("ollama", {}).get("host", "http://127.0.0.1:11434")
         
         # Short-term memory (in-memory)
         self.short_term = {}
@@ -59,6 +66,19 @@ class MemorySystem:
         
         logger.info("🧠 Memory system initialized (enhanced)")
         
+    def _connect_db(self) -> sqlite3.Connection:
+        """Open the episodic DB with a busy timeout.
+
+        Several writers touch this file - the interactive command path, the
+        remote-queue worker, the memory-maintenance worker, and any
+        concurrent `--journal`/`--tasks` invocation. WAL makes contention
+        unlikely but not impossible; without an explicit timeout a collision
+        surfaces as an immediate "database is locked" instead of a short wait.
+        """
+        conn = sqlite3.connect(self.episodic_db, timeout=10.0)
+        conn.execute("PRAGMA busy_timeout=10000")
+        return conn
+
     def _resolve_project_path(self, path_value: str) -> Path:
         """Resolve config paths once so cwd changes cannot break memory."""
 
@@ -77,11 +97,10 @@ class MemorySystem:
         return []
 
     def _save_sessions(self):
-        """Save session history to disk"""
+        """Save session history to disk atomically."""
         if self.persist_sessions:
             try:
-                self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
-                self.sessions_path.write_text(json.dumps(self.sessions, indent=2), encoding="utf-8")
+                write_json_atomic(self.sessions_path, self.sessions)
             except Exception as e:
                 logger.error("Failed to save sessions: {}", str(e))
 
@@ -95,10 +114,9 @@ class MemorySystem:
         return {}
 
     def _save_preferences(self):
-        """Save user preferences to disk"""
+        """Save user preferences to disk atomically."""
         try:
-            self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
-            self.preferences_path.write_text(json.dumps(self.preferences, indent=2), encoding="utf-8")
+            write_json_atomic(self.preferences_path, self.preferences)
         except Exception as e:
             logger.error("Failed to save preferences: {}", str(e))
 
@@ -249,18 +267,26 @@ class MemorySystem:
     # ============= LONG-TERM MEMORY =============
     
     def _load_long_term(self) -> Dict[str, Any]:
-        """Load long-term memory from disk"""
-        
+        """Load long-term memory from disk.
+
+        Unlike sessions/preferences, this previously had no exception
+        handling and no explicit encoding - invalid JSON or a non-ASCII byte
+        (decoded as cp1252 by default on Windows) raised out of __init__ and
+        prevented the whole controller from booting.
+        """
         if self.long_term_path.exists():
-            with open(self.long_term_path, 'r') as f:
-                return json.load(f)
+            try:
+                return json.loads(self.long_term_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning("Failed to load long-term memory: {}", str(e))
         return {}
-    
+
     def _save_long_term(self):
-        """Save long-term memory to disk"""
-        
-        with open(self.long_term_path, 'w') as f:
-            json.dump(self.long_term, f, indent=2)
+        """Save long-term memory to disk atomically."""
+        try:
+            write_json_atomic(self.long_term_path, self.long_term)
+        except Exception as e:
+            logger.error("Failed to save long-term memory: {}", str(e))
     
     def remember_long_term(self, key: str, value: Any, category: str = "general"):
         """
@@ -320,10 +346,11 @@ class MemorySystem:
     
     def _init_episodic_db(self):
         """Initialize episodic memory database"""
-        
-        conn = sqlite3.connect(self.episodic_db)
+
+        conn = self._connect_db()
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS episodes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -336,9 +363,198 @@ class MemorySystem:
                 learned TEXT
             )
         """)
-        
+
+        # Durable records for multi-step plans: status/attempts/last error so
+        # a crash mid-plan is visible on the next boot instead of vanishing
+        # silently (it previously existed only as local variables in one
+        # coroutine). Deliberately NOT auto-resumed - see get_incomplete_tasks.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 1,
+                steps_completed INTEGER NOT NULL DEFAULT 0,
+                steps_total INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created TEXT NOT NULL,
+                updated TEXT NOT NULL
+            )
+        """)
+
+        # Human-reviewable record of every executed command. Previously a
+        # single JSON file rewritten whole (up to 500 entries) on every
+        # command; now an O(1) insert plus a bounded delete, same as
+        # command_history's migration (learning/experience_replay.py).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS execution_journal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                command TEXT NOT NULL,
+                tier TEXT,
+                success INTEGER NOT NULL,
+                data TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_journal_timestamp ON execution_journal(timestamp)")
+        # episodes was the only hot table without indexes, yet both recall
+        # paths and prune_episodes order by it (audit L-4).
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes(timestamp)")
+
+        # Semantic recall: an embedding per episode, computed lazily. Optional
+        # - recall_similar_episodes falls back to the LIKE scan below when no
+        # embedding model is pulled or this table is empty (core/embeddings.py
+        # never raises, just returns None).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS episode_embeddings (
+                episode_id INTEGER PRIMARY KEY,
+                embedding BLOB NOT NULL
+            )
+        """)
+        # Must come after the CREATE TABLE: indexing a table that does not
+        # exist yet fails outright on a fresh database.
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_episode_embeddings_ep "
+            "ON episode_embeddings(episode_id)"
+        )
+
         conn.commit()
         conn.close()
+        self._migrate_journal_json_if_needed()
+
+    def _migrate_journal_json_if_needed(self):
+        """One-time import of a pre-existing execution_journal.json."""
+        journal_json_path = self.data_path / "execution_journal.json"
+        if not journal_json_path.exists():
+            return
+        conn = self._connect_db()
+        existing = conn.execute("SELECT COUNT(*) FROM execution_journal").fetchone()[0]
+        if existing > 0:
+            conn.close()
+            return  # already migrated, or genuinely has data - never overwrite
+
+        try:
+            old_entries = json.loads(journal_json_path.read_text(encoding="utf-8"))
+        except Exception:
+            conn.close()
+            return
+        if not isinstance(old_entries, list) or not old_entries:
+            conn.close()
+            return
+
+        for entry in old_entries[-500:]:
+            if not isinstance(entry, dict):
+                continue
+            conn.execute(
+                "INSERT INTO execution_journal (timestamp, command, tier, success, data) VALUES (?, ?, ?, ?, ?)",
+                (
+                    entry.get("timestamp", ""),
+                    str(entry.get("command", ""))[:500],
+                    entry.get("tier"),
+                    1 if entry.get("success") else 0,
+                    json.dumps(entry, default=str),
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+    def add_journal_entry(self, entry: Dict[str, Any]):
+        """Append one execution-journal entry, keeping only the most recent 500."""
+        conn = self._connect_db()
+        conn.execute(
+            "INSERT INTO execution_journal (timestamp, command, tier, success, data) VALUES (?, ?, ?, ?, ?)",
+            (
+                entry.get("timestamp", datetime.now().isoformat(timespec="seconds")),
+                str(entry.get("command", ""))[:500],
+                entry.get("tier"),
+                1 if entry.get("success") else 0,
+                json.dumps(entry, default=str),
+            ),
+        )
+        conn.execute(
+            "DELETE FROM execution_journal WHERE id NOT IN "
+            "(SELECT id FROM execution_journal ORDER BY id DESC LIMIT 500)"
+        )
+        conn.commit()
+        conn.close()
+
+    def get_journal_entries(self, limit: int = 15) -> List[Dict[str, Any]]:
+        """Return the most recent execution-journal entries, oldest first."""
+        conn = self._connect_db()
+        rows = conn.execute(
+            "SELECT data FROM execution_journal ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        conn.close()
+        return [json.loads(row[0]) for row in reversed(rows)]
+
+    def create_task_record(self, command: str, steps_total: int = 0) -> int:
+        """Insert a new task record (status 'running') and return its id."""
+        now = datetime.now().isoformat()
+        conn = self._connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO tasks (command, status, attempts, steps_total, created, updated) "
+            "VALUES (?, 'running', 1, ?, ?, ?)",
+            (command, steps_total, now, now),
+        )
+        task_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return task_id
+
+    def update_task_record(
+        self,
+        task_id: int,
+        status: Optional[str] = None,
+        steps_completed: Optional[int] = None,
+        steps_total: Optional[int] = None,
+        last_error: Optional[str] = None,
+    ):
+        """Update an existing task record. Only supplied fields change."""
+        if task_id is None:
+            return
+        fields = ["updated = ?"]
+        values: List[Any] = [datetime.now().isoformat()]
+        if status is not None:
+            fields.append("status = ?")
+            values.append(status)
+        if steps_completed is not None:
+            fields.append("steps_completed = ?")
+            values.append(steps_completed)
+        if steps_total is not None:
+            fields.append("steps_total = ?")
+            values.append(steps_total)
+        if last_error is not None:
+            fields.append("last_error = ?")
+            values.append(last_error)
+        values.append(task_id)
+
+        conn = self._connect_db()
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+        conn.close()
+
+    def get_incomplete_tasks(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Return tasks left in a non-terminal state (e.g. by a crash).
+
+        Deliberately not auto-resumed - a multi-step task can have real
+        side effects, and resuming one unattended after a crash is exactly
+        the kind of default the safety work elsewhere in this codebase
+        avoids. This surfaces them for a human to review/re-run.
+        """
+        conn = self._connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, command, status, attempts, steps_completed, steps_total, "
+            "last_error, created, updated FROM tasks WHERE status = 'running' "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        columns = [d[0] for d in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        conn.close()
+        return rows
     
     def remember_episode(
         self,
@@ -361,7 +577,7 @@ class MemorySystem:
             learned: What was learned from this
         """
         
-        conn = sqlite3.connect(self.episodic_db)
+        conn = self._connect_db()
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -376,44 +592,224 @@ class MemorySystem:
             json.dumps(context) if context else None,
             learned
         ))
-        
+        episode_id = cursor.lastrowid
+
         conn.commit()
         conn.close()
-        
+
         logger.info("📝 Episode recorded: {} -> {}", task, "success" if success else "failure")
+
+        # Best-effort, never blocks: an unavailable embedding model just
+        # means this episode falls back to keyword recall like before.
+        try:
+            vector = embed(task, host=self.embedding_host, model=self.embedding_model)
+            if vector:
+                conn = self._connect_db()
+                conn.execute(
+                    "INSERT OR REPLACE INTO episode_embeddings (episode_id, embedding) VALUES (?, ?)",
+                    (episode_id, pack_embedding(vector)),
+                )
+                conn.commit()
+                conn.close()
+        except Exception as exc:
+            logger.debug("Episode embedding skipped: {}", str(exc))
     
     def recall_similar_episodes(self, task: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Find similar past episodes for learning"""
-        
-        conn = sqlite3.connect(self.episodic_db)
+        """Find similar past episodes for learning.
+
+        Tries embedding-based cosine similarity first - understands
+        paraphrases a keyword scan misses (e.g. "clean up downloads" vs
+        "organize the downloads folder" share no words but are the same
+        request). Falls back to the original LIKE '%task%' scan when no
+        embedding model is available or no episode has one yet - this was
+        always a leading-wildcard scan with no usable index, so the
+        fallback path is unchanged, just no longer the only path.
+        """
+        query_vector = self._embed_query_cached(task)
+        if query_vector:
+            semantic = self._recall_similar_episodes_semantic(query_vector, limit)
+            if semantic:
+                return semantic
+
+        return self._recall_similar_episodes_keyword(task, limit)
+
+    def backfill_episode_embeddings(self, batch_limit: int = 200) -> Dict[str, Any]:
+        """Embed recent episodes that predate the embeddings table.
+
+        Semantic recall JOINs episodes to episode_embeddings, so episodes
+        written before embeddings existed are invisible to it (audit M-1:
+        1,079 of 1,100 rows). Runs newest-first in bounded batches so it can
+        never turn into an unbounded startup stall; returns how many it did.
+        """
+        conn = self._connect_db()
+        rows = conn.execute(
+            "SELECT e.id, e.task FROM episodes e "
+            "LEFT JOIN episode_embeddings ee ON ee.episode_id = e.id "
+            "WHERE ee.episode_id IS NULL AND e.task IS NOT NULL AND e.task != '' "
+            "ORDER BY e.id DESC LIMIT ?",
+            (batch_limit,),
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return {"embedded": 0, "remaining": 0}
+
+        embedded = 0
+        for episode_id, task in rows:
+            vector = embed(task, host=self.embedding_host, model=self.embedding_model)
+            if not vector:
+                break  # model unavailable - stop rather than spin
+            conn = self._connect_db()
+            conn.execute(
+                "INSERT OR REPLACE INTO episode_embeddings (episode_id, embedding) VALUES (?, ?)",
+                (episode_id, pack_embedding(vector)),
+            )
+            conn.commit()
+            conn.close()
+            embedded += 1
+
+        conn = self._connect_db()
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM episodes e LEFT JOIN episode_embeddings ee "
+            "ON ee.episode_id = e.id WHERE ee.episode_id IS NULL"
+        ).fetchone()[0]
+        conn.close()
+
+        if embedded:
+            logger.info("Backfilled {} episode embeddings ({} remaining)", embedded, remaining)
+        return {"embedded": embedded, "remaining": remaining}
+
+    def prune_episodes(self, keep: int = 2000) -> int:
+        """Cap episodic history so it cannot grow without bound (audit M-4).
+
+        command_history and execution_journal were already capped at 500;
+        episodes was not, and now carries a ~3KB embedding per row.
+        """
+        conn = self._connect_db()
         cursor = conn.cursor()
-        
-        # Simple keyword match (can be improved with embeddings)
+        cursor.execute(
+            "DELETE FROM episodes WHERE id NOT IN "
+            "(SELECT id FROM episodes ORDER BY id DESC LIMIT ?)", (keep,)
+        )
+        removed = cursor.rowcount or 0
+        # Drop orphaned embeddings for the rows we just removed.
+        cursor.execute(
+            "DELETE FROM episode_embeddings WHERE episode_id NOT IN (SELECT id FROM episodes)"
+        )
+        conn.commit()
+        conn.close()
+        if removed:
+            logger.info("Pruned {} old episodes (keeping most recent {})", removed, keep)
+        return removed
+
+    # Query-embedding cache. The Ollama round-trip is ~86ms and dominates
+    # recall latency; the same phrasings recur constantly within a session
+    # (follow-ups, retries, the verification pass re-checking a command).
+    _QUERY_CACHE_LIMIT = 128
+
+    def _embed_query_cached(self, task: str) -> Optional[List[float]]:
+        """Embed a recall query, reusing a recent identical one."""
+        cache = getattr(self, "_query_vector_cache", None)
+        if cache is None:
+            cache = self._query_vector_cache = {}
+        key = (task or "").strip().lower()
+        if key in cache:
+            return cache[key]
+
+        vector = embed(task, host=self.embedding_host, model=self.embedding_model)
+        if vector:
+            if len(cache) >= self._QUERY_CACHE_LIMIT:
+                cache.pop(next(iter(cache)))  # simple FIFO eviction
+            cache[key] = vector
+        return vector
+
+    @staticmethod
+    def _batch_similarity(query_vector: List[float], vectors: List[List[float]]) -> List[float]:
+        """Cosine similarity of one query against many vectors, at once.
+
+        This ran as a Python loop calling cosine_similarity per row - 500
+        pure-Python dot products on the Brain tier's critical path (audit
+        L-4). numpy is already a dependency; one matrix multiply replaces
+        the loop. Falls back to the scalar path if numpy is unavailable so
+        recall keeps working rather than failing.
+        """
+        if not vectors:
+            return []
+        try:
+            import numpy as np
+
+            matrix = np.asarray(vectors, dtype=np.float32)
+            query = np.asarray(query_vector, dtype=np.float32)
+            norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(query)
+            # Guard against a zero vector rather than emitting nan/inf.
+            norms[norms == 0] = 1e-9
+            return (matrix @ query / norms).tolist()
+        except Exception:
+            return [cosine_similarity(query_vector, v) for v in vectors]
+
+    def _recall_similar_episodes_semantic(self, query_vector: List[float], limit: int) -> List[Dict[str, Any]]:
+        conn = self._connect_db()
+        cursor = conn.cursor()
+        # Bounded to the most recent 500 embedded episodes rather than an
+        # unbounded scan of the whole table's history.
+        cursor.execute("""
+            SELECT e.id, e.timestamp, e.task, e.action, e.result, e.success, e.context, e.learned, ee.embedding
+            FROM episodes e JOIN episode_embeddings ee ON ee.episode_id = e.id
+            ORDER BY e.id DESC LIMIT 500
+        """)
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        conn.close()
+
+        row_dicts, vectors = [], []
+        for row in rows:
+            row_dict = dict(zip(columns, row))
+            vectors.append(unpack_embedding(row_dict.pop("embedding")))
+            row_dicts.append(row_dict)
+
+        scored = list(zip(self._batch_similarity(query_vector, vectors), row_dicts))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        results = []
+        for score, row_dict in scored[:limit]:
+            if score < 0.5:  # weak match - not worth returning as "similar"
+                continue
+            if row_dict.get("context"):
+                row_dict["context"] = json.loads(row_dict["context"])
+            row_dict["similarity"] = round(score, 3)
+            results.append(row_dict)
+
+        logger.debug("🔍 Found {} semantically similar episodes", len(results))
+        return results
+
+    def _recall_similar_episodes_keyword(self, task: str, limit: int) -> List[Dict[str, Any]]:
+        conn = self._connect_db()
+        cursor = conn.cursor()
+
         cursor.execute("""
             SELECT * FROM episodes
             WHERE task LIKE ?
             ORDER BY timestamp DESC
             LIMIT ?
         """, (f"%{task}%", limit))
-        
+
         columns = [desc[0] for desc in cursor.description]
         episodes = []
-        
+
         for row in cursor.fetchall():
             episode = dict(zip(columns, row))
             if episode['context']:
                 episode['context'] = json.loads(episode['context'])
             episodes.append(episode)
-        
+
         conn.close()
-        
-        logger.debug("🔍 Found {} similar episodes", len(episodes))
+
+        logger.debug("🔍 Found {} similar episodes (keyword fallback)", len(episodes))
         return episodes
     
     def get_success_rate(self, task_pattern: str) -> float:
         """Get success rate for similar tasks"""
         
-        conn = sqlite3.connect(self.episodic_db)
+        conn = self._connect_db()
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -453,7 +849,7 @@ class MemorySystem:
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get memory system statistics"""
         
-        conn = sqlite3.connect(self.episodic_db)
+        conn = self._connect_db()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM episodes")
         episode_count = cursor.fetchone()[0]

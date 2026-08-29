@@ -13,6 +13,9 @@ import re
 
 from loguru import logger
 
+from core.atomic_io import write_json_atomic
+from core.config import load_config
+
 
 class BusinessAgent:
     """
@@ -31,18 +34,22 @@ class BusinessAgent:
         # fork depending on the directory ASC was launched from.
         self.project_root = Path(config_path).resolve().parent.parent
 
-        with open(config_path, "r", encoding="utf-8") as file:
-            self.config = json.load(file)
+        self.config_path = Path(config_path).resolve()
+        self.config = load_config(config_path)
+        # Merge secrets from gitignored credentials files so settings.json
+        # stays shareable while email/calendar still work.
+        # load_credentials transparently decrypts OS-protected values and
+        # upgrades any remaining plaintext in place on first read, so an
+        # existing install migrates without user action.
+        for section, filename in self.CREDENTIAL_FILES.items():
+            try:
+                from core.secrets import load_credentials
 
-        # Merge secrets from gitignored credentials file so settings.json
-        # stays shareable while email still works.
-        try:
-            creds_path = self.project_root / "data" / "email_credentials.json"
-            if creds_path.exists():
-                creds = json.loads(creds_path.read_text(encoding="utf-8"))
-                self.config.setdefault("email", {}).update(creds)
-        except Exception as exc:
-            logger.warning("Email credentials merge skipped: {}", str(exc))
+                creds = load_credentials(self.project_root / "data" / filename)
+                if creds:
+                    self.config.setdefault(section, {}).update(creds)
+            except Exception as exc:
+                logger.warning("{} credentials merge skipped: {}", section, str(exc))
 
         self.data_path = self._data_file("business_tasks.json")
         self.data_path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,6 +63,53 @@ class BusinessAgent:
     def _data_file(self, filename: str) -> Path:
         """Resolve a file inside <project_root>/data/ regardless of cwd."""
         return self.project_root / "data" / filename
+
+    # Config sections whose secrets live in a gitignored credentials file
+    # instead of settings.json. settings.json is tracked by git, so a secret
+    # written there is a secret committed to the repository (audit H-1).
+    CREDENTIAL_FILES = {
+        "email": "email_credentials.json",
+        "google_calendar": "google_credentials.json",
+    }
+
+    def _persist_config_section(
+        self,
+        section: str,
+        values: Dict[str, Any],
+        secret_keys: tuple = (),
+    ) -> None:
+        """Save a config section, keeping secrets out of settings.json.
+
+        Secrets go to <project_root>/data/<section>_credentials.json, encrypted
+        at rest by the OS keystore; everything else goes to settings.json,
+        written atomically. Previously both halves were written straight into
+        settings.json in clear text - a tracked file - which put a live Gmail
+        app password and a Google API key into version control (audit H-1),
+        and did it with a truncate-then-write that could destroy the config
+        outright if interrupted (audit H-3).
+        """
+        secrets_part = {k: v for k, v in values.items() if k in secret_keys and v}
+        public_part = {k: v for k, v in values.items() if k not in secret_keys}
+
+        # In-memory config keeps everything so the running session works.
+        self.config[section] = dict(values)
+
+        if secrets_part:
+            try:
+                from core.secrets import save_credentials
+
+                filename = self.CREDENTIAL_FILES.get(section, f"{section}_credentials.json")
+                save_credentials(self._data_file(filename), secrets_part)
+            except Exception as exc:
+                logger.error("Could not store {} secrets securely: {}", section, str(exc))
+                raise
+
+        try:
+            settings = load_config(str(self.config_path))
+            settings[section] = public_part
+            write_json_atomic(self.config_path, settings)
+        except Exception as exc:
+            logger.warning("Could not save {} configuration: {}", section, str(exc))
 
     def _load_tasks(self) -> List[Dict[str, Any]]:
         """Load business tasks from storage."""
@@ -97,8 +151,7 @@ class BusinessAgent:
                 "tasks": self.tasks,
                 "updated_at": datetime.now().isoformat()
             }
-            with open(self.data_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            write_json_atomic(self.data_path, data)
         except Exception as e:
             logger.error("Failed to save tasks: {}", str(e))
 
@@ -106,8 +159,7 @@ class BusinessAgent:
         """Save projects to storage."""
         try:
             projects_path = self._data_file("projects.json")
-            with open(projects_path, "w", encoding="utf-8") as f:
-                json.dump(self.projects, f, indent=2)
+            write_json_atomic(projects_path, self.projects)
         except Exception as e:
             logger.error("Failed to save projects: {}", str(e))
 
@@ -115,8 +167,7 @@ class BusinessAgent:
         """Save schedules to storage."""
         try:
             schedules_path = self._data_file("schedules.json")
-            with open(schedules_path, "w", encoding="utf-8") as f:
-                json.dump(self.schedules, f, indent=2)
+            write_json_atomic(schedules_path, self.schedules)
         except Exception as e:
             logger.error("Failed to save schedules: {}", str(e))
 
@@ -640,26 +691,16 @@ class BusinessAgent:
                     "message": "Google Calendar integration requires the requests library"
                 }
             
-            # Store configuration
             google_config = {
                 "configured": True,
                 "api_key": api_key,
                 "calendar_id": calendar_id,
                 "configured_at": datetime.now().isoformat()
             }
-            
-            # Update config
-            self.config["google_calendar"] = google_config
-            
-            # Save to file
-            try:
-                with open("./config/settings.json", "r", encoding="utf-8") as f:
-                    settings = json.load(f)
-                settings["google_calendar"] = google_config
-                with open("./config/settings.json", "w", encoding="utf-8") as f:
-                    json.dump(settings, f, indent=2)
-            except Exception as e:
-                logger.warning("Could not save Google Calendar configuration: {}", str(e))
+
+            # api_key is a secret: it goes to the gitignored credentials file,
+            # never into the tracked settings.json.
+            self._persist_config_section("google_calendar", google_config, secret_keys=("api_key",))
             
             return {
                 "success": True,
@@ -1034,29 +1075,20 @@ class BusinessAgent:
                               "Please check your settings and try again."
                 }
             
-            # Store configuration (encrypted in production)
             email_config = {
                 "configured": True,
                 "smtp_server": smtp_server,
                 "smtp_port": smtp_port,
                 "email_address": email_address,
-                "password": password,  # In production, this should be encrypted
+                "password": password,
                 "use_tls": use_tls,
                 "configured_at": datetime.now().isoformat()
             }
-            
-            # Update config
-            self.config["email"] = email_config
-            
-            # Save to file (in production, use secure storage)
-            try:
-                with open("./config/settings.json", "r", encoding="utf-8") as f:
-                    settings = json.load(f)
-                settings["email"] = email_config
-                with open("./config/settings.json", "w", encoding="utf-8") as f:
-                    json.dump(settings, f, indent=2)
-            except Exception as e:
-                logger.warning("Could not save email configuration: {}", str(e))
+
+            # The password is split out into the gitignored credentials file
+            # and encrypted by the OS keystore; only the non-secret fields
+            # reach settings.json.
+            self._persist_config_section("email", email_config, secret_keys=("password",))
             
             return {
                 "success": True,
@@ -1207,8 +1239,7 @@ ASC"""
             
             logs.append(log_entry)
             
-            with open(comm_log_path, "w", encoding="utf-8") as f:
-                json.dump(logs, f, indent=2)
+            write_json_atomic(comm_log_path, logs)
             
             return {
                 "success": True,
@@ -2380,8 +2411,7 @@ ASC"""
         
         # Save team members
         try:
-            with open(team_path, "w", encoding="utf-8") as f:
-                json.dump(team_members, f, indent=2)
+            write_json_atomic(team_path, team_members)
         except Exception as e:
             return {
                 "success": False,
@@ -2460,8 +2490,7 @@ ASC"""
         
         # Save both
         try:
-            with open(team_path, "w", encoding="utf-8") as f:
-                json.dump(team_members, f, indent=2)
+            write_json_atomic(team_path, team_members)
             self._save_projects()
         except Exception as e:
             return {"success": False, "error": f"Failed to save assignment: {str(e)}"}
@@ -2544,8 +2573,7 @@ ASC"""
         
         # Save notifications
         try:
-            with open(notifications_path, "w", encoding="utf-8") as f:
-                json.dump(notifications, f, indent=2)
+            write_json_atomic(notifications_path, notifications)
         except Exception as e:
             return {
                 "success": False,
@@ -2627,8 +2655,7 @@ ASC"""
         
         # Save notifications
         try:
-            with open(notifications_path, "w", encoding="utf-8") as f:
-                json.dump(notifications, f, indent=2)
+            write_json_atomic(notifications_path, notifications)
         except Exception as e:
             return {"success": False, "error": f"Failed to save notification: {str(e)}"}
         
@@ -2675,8 +2702,7 @@ ASC"""
         
         # Save workspaces
         try:
-            with open(workspaces_path, "w", encoding="utf-8") as f:
-                json.dump(workspaces, f, indent=2)
+            write_json_atomic(workspaces_path, workspaces)
         except Exception as e:
             return {
                 "success": False,

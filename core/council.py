@@ -1,4 +1,4 @@
-﻿"""
+"""
 LLM Council - Optimized with Sequential Loading
 Only loads ONE model at a time to save RAM
 """
@@ -6,9 +6,11 @@ Only loads ONE model at a time to save RAM
 import asyncio
 import json
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from ollama import AsyncClient
 from loguru import logger
+
+from core.config import load_config
 
 
 MODEL_FALLBACKS = {
@@ -33,18 +35,16 @@ class LLMCouncil:
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize council"""
         
-        with open(config_path, 'r') as f:
-            self.config = json.load(f)
-        
+        self.config = load_config(config_path)
         ollama_config = self.config.get('ollama', {})
         self.ollama = AsyncClient(host=ollama_config.get('host', 'http://127.0.0.1:11434'))
         self.ollama_timeout = float(ollama_config.get('timeout', 120))
         self.keep_alive = str(ollama_config.get('keep_alive', '5m'))
         self.fallback_chain = list(ollama_config.get('fallback_chain', ['gemma2:2b', 'tinyllama:latest']))
-        # num_gpu: 0 forces CPU inference - immune to desktop VRAM pressure.
-        # Remove or raise on machines with dedicated free GPU memory.
+        # num_gpu offloads to GPU when the host has VRAM to spare; 0 forces
+        # CPU-only inference. See config/settings.json for the active value.
         num_gpu = ollama_config.get('num_gpu')
-        self.base_options = {"num_ctx": 2048}
+        self.base_options = {"num_ctx": 4096}
         if num_gpu is not None:
             self.base_options["num_gpu"] = int(num_gpu)
         self.council_config = self.config['llm_council']
@@ -157,6 +157,7 @@ ONLY JSON:"""
             
         except Exception as e:
             logger.error("Quick decision failed: {}", str(e))
+            self.member_stats[member]['calls'] += 1
             self.member_stats[member]['failures'] += 1
             return {"error": str(e), "member": member}
     
@@ -214,6 +215,7 @@ ONLY JSON:"""
             
         except Exception as e:
             logger.error("Strategic decision failed: {}", str(e))
+            self.member_stats[member]['calls'] += 1
             self.member_stats[member]['failures'] += 1
             return {"error": str(e), "member": member}
     
@@ -287,11 +289,14 @@ Your expert opinion in JSON:
 ONLY JSON:"""
 
         try:
-            response, used_model = await self._generate_with_fallbacks(member, prompt)
+            # keep_alive="0": this is an intermediate opinion, not the final
+            # answer - unload it immediately so a multi-member consultation
+            # never holds more than one model resident at once.
+            response, used_model = await self._generate_with_fallbacks(member, prompt, keep_alive="0")
             result = self._parse_response(response['response'])
             result['model'] = used_model
             return result
-            
+
         except Exception as e:
             logger.error("{} failed: {}", member, str(e))
             return {"opinion": "unavailable", "error": str(e)}
@@ -338,8 +343,19 @@ ONLY JSON:"""
             logger.error("Chairman failed: {}", str(e))
             return {"error": str(e), "method": "chairman_failed"}
     
-    async def _generate_with_fallbacks(self, member: str, prompt: str, options: Dict[str, Any] = None, images: List[bytes] = None) -> tuple[Dict[str, Any], str]:
-        """Try the preferred model first, then walk down the fallback chain on ANY failure."""
+    async def _generate_with_fallbacks(
+        self, member: str, prompt: str, options: Dict[str, Any] = None,
+        images: List[bytes] = None, keep_alive: Optional[str] = None,
+    ) -> tuple[Dict[str, Any], str]:
+        """Try the preferred model first, then walk down the fallback chain on ANY failure.
+
+        `keep_alive` defaults to the configured value; pass "0" for
+        intermediate multi-member consultations so the model actually
+        unloads before the next one loads - without this override, sequential
+        and full council calls held every consulted model resident for the
+        full keep_alive window simultaneously, contradicting this class's own
+        "only one model at a time" design.
+        """
         preferred = self._select_model_for_member(member)
         candidates = [preferred]
         for model in self.fallback_chain + MODEL_FALLBACKS.get(preferred, []):
@@ -355,7 +371,7 @@ ONLY JSON:"""
                 payload = {
                     "model": model,
                     "prompt": prompt,
-                    "keep_alive": self.keep_alive,
+                    "keep_alive": keep_alive if keep_alive is not None else self.keep_alive,
                     "options": default_options,
                 }
                 if images:
@@ -372,6 +388,96 @@ ONLY JSON:"""
             raise last_error
         raise RuntimeError("No model available")
 
+    async def verify_outcome(self, command: str, summary: str) -> Dict[str, Any]:
+        """Ask whether an already-executed outcome actually satisfies the request.
+
+        Deliberately cheap: one short yes/no+reason call with a small
+        num_predict, not a full re-plan. This is what turns "the handler
+        returned success=True" into "the user actually got what they asked
+        for" - previously success was purely structural (steps_completed ==
+        steps_total), so a plan that ran every step without error but
+        ignored part of the request (e.g. organizing a folder while ignoring
+        an age filter the user specified) reported full success with
+        nothing to catch the mismatch.
+
+        Uses "strategist" (qwen2.5:3b), not "speed" (gemma2:2b): tested live
+        against the organize-with-age-filter case above, gemma2:2b was too
+        lenient and reported satisfied=True on the ignored filter, while
+        qwen2.5:3b correctly caught it (satisfied=False, confidence 0.8).
+        With GPU offload this call still lands in a few seconds.
+        """
+        member = "strategist"
+        prompt = f"""You are a strict verifier. A task was executed. Decide if the outcome actually satisfies what the user asked for.
+
+User asked: {command}
+
+What happened: {summary[:800]}
+
+Respond with ONLY this JSON, nothing else:
+{{"satisfied": true or false, "confidence": 0.0-1.0, "reason": "one short sentence"}}"""
+
+        try:
+            response, used_model = await self._generate_with_fallbacks(
+                member, prompt, options={"num_predict": 120}
+            )
+            result = self._parse_response(response["response"])
+            if "error" in result:
+                # Unparseable verification is not evidence of failure - do
+                # not let a flaky verifier override a real success.
+                return {"satisfied": True, "confidence": 0.0, "reason": "Verification response unparseable.", "verified": False}
+            return {
+                "satisfied": bool(result.get("satisfied", True)),
+                "confidence": float(result.get("confidence", 0.5) or 0.5),
+                "reason": str(result.get("reason", "")),
+                "model": used_model,
+                "verified": True,
+            }
+        except Exception as exc:
+            logger.warning("Outcome verification unavailable: {}", str(exc))
+            # Fail open: an unavailable verifier must never turn a real
+            # success into a reported failure.
+            return {"satisfied": True, "confidence": 0.0, "reason": f"Verification unavailable: {exc}", "verified": False}
+
+    async def summarize_findings(self, topic: str, raw_text: str) -> Dict[str, Any]:
+        """Turn raw scraped page text into an actual synthesized summary.
+
+        Previously the "research and report" pipeline (core/task_decomposer.py's
+        research_report template) just dumped the first 1500 characters of
+        raw page text into a .txt file with no synthesis at all - "research"
+        that never actually read or understood anything. This is what
+        upgrades it into a real report: a short synthesis in prose, not a
+        raw scrape.
+        """
+        prompt = f"""You are writing a research summary.
+
+Topic: {topic}
+
+Raw source material (may be messy web page text):
+{raw_text[:4000]}
+
+Write a clear, well-organized summary of the key findings relevant to the
+topic, in 3-5 short paragraphs of plain prose. Do not just repeat the raw
+text - synthesize it. If the source material has nothing relevant, say so
+plainly instead of inventing findings.
+
+Respond with ONLY this JSON, nothing else:
+{{"summary": "the summary text"}}"""
+
+        try:
+            response, used_model = await self._generate_with_fallbacks(
+                "strategist", prompt, options={"num_predict": 700}
+            )
+            result = self._parse_response(response["response"])
+            summary = result.get("summary") if "error" not in result else None
+            if not summary:
+                # Model didn't return valid JSON - fall back to the raw
+                # response text itself rather than failing the whole report.
+                summary = response["response"].strip()
+            return {"success": True, "summary": summary, "model": used_model}
+        except Exception as exc:
+            logger.warning("Findings summarization unavailable: {}", str(exc))
+            return {"success": False, "summary": None, "error": str(exc)}
+
     def _parse_response(self, text: str) -> Dict[str, Any]:
         """Parse JSON from response"""
         
@@ -384,8 +490,11 @@ ONLY JSON:"""
         
         try:
             return json.loads(cleaned)
-        except:
-            return {"raw_response": cleaned, "parse_error": "JSON failed"}
+        except (json.JSONDecodeError, ValueError):
+            # "error" must be present - process_command checks `if "error" in
+            # plan` to detect a failed plan; without this key malformed model
+            # output was silently treated as a valid (empty) plan.
+            return {"raw_response": cleaned, "parse_error": "JSON failed", "error": "JSON failed"}
     
     def get_stats(self) -> Dict[str, Any]:
         """Get council statistics"""

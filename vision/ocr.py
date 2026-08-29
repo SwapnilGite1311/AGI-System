@@ -30,9 +30,10 @@ def resolve_tesseract_cmd(config_path: str = "./config/settings.json") -> Option
     Returns None when nothing is found.
     """
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-    except (OSError, ValueError):
+        from core.config import load_config
+
+        config = load_config(config_path)
+    except Exception:
         config = {}
 
     configured = config.get("vision", {}).get("tesseract_path")

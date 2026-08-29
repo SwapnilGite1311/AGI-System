@@ -11,6 +11,10 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 from loguru import logger
 
+from core.config import load_config, data_dir
+
+from core.atomic_io import write_json_atomic
+
 
 class EnterpriseSecurity:
     """
@@ -26,10 +30,9 @@ class EnterpriseSecurity:
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize enterprise security system."""
         
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = json.load(f)
-        
-        self.security_path = Path("data/security")
+        self.config = load_config(config_path)
+        # Project-relative, not cwd-relative (audit M-5).
+        self.security_path = data_dir(config_path) / "security"
         self.security_path.mkdir(parents=True, exist_ok=True)
         
         self.audit_trail = self._load_audit_trail()
@@ -83,21 +86,54 @@ class EnterpriseSecurity:
                 logger.warning("Failed to load encryption keys: {}", str(e))
         return {}
 
+    # Entries kept in the live trail. Older ones roll into a dated archive
+    # rather than being deleted - an audit log that silently drops history is
+    # worse than one that grows, but one that rewrites 5000 entries on every
+    # single event costs 78ms per event and never stops rising (audit M-3).
+    AUDIT_TRAIL_LIMIT = 2000
+    AUDIT_ARCHIVE_CHUNK = 1000
+
     def _save_audit_trail(self):
-        """Save audit trail to storage."""
+        """Save audit trail to storage, rotating when it grows too large."""
         try:
+            if len(self.audit_trail) > self.AUDIT_TRAIL_LIMIT:
+                self._rotate_audit_trail()
             audit_path = self.security_path / "audit_trail.json"
-            with open(audit_path, "w", encoding="utf-8") as f:
-                json.dump(self.audit_trail, f, indent=2)
+            write_json_atomic(audit_path, self.audit_trail)
         except Exception as e:
             logger.error("Failed to save audit trail: {}", str(e))
+
+    def _rotate_audit_trail(self):
+        """Archive everything above the limit, in one pass.
+
+        Shedding a single fixed chunk per save is not enough: a trail that
+        is already far over the limit stays over it, and every save keeps
+        paying the full serialisation cost.
+        """
+        try:
+            overflow = len(self.audit_trail) - self.AUDIT_TRAIL_LIMIT
+            if overflow <= 0:
+                return
+            archive_dir = self.security_path / "audit_archive"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            chunk, self.audit_trail = (
+                self.audit_trail[:overflow],
+                self.audit_trail[overflow:],
+            )
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            write_json_atomic(archive_dir / f"audit_{stamp}.json", chunk)
+            logger.info(
+                "Rotated {} audit entries into archive ({} kept live)",
+                len(chunk), len(self.audit_trail),
+            )
+        except Exception as e:
+            logger.error("Audit rotation failed, keeping entries in place: {}", str(e))
 
     def _save_tenants(self):
         """Save tenant configurations."""
         try:
             tenants_path = self.security_path / "tenants.json"
-            with open(tenants_path, "w", encoding="utf-8") as f:
-                json.dump(self.tenants, f, indent=2)
+            write_json_atomic(tenants_path, self.tenants)
         except Exception as e:
             logger.error("Failed to save tenants: {}", str(e))
 
@@ -105,8 +141,7 @@ class EnterpriseSecurity:
         """Save role definitions."""
         try:
             roles_path = self.security_path / "roles.json"
-            with open(roles_path, "w", encoding="utf-8") as f:
-                json.dump(self.roles, f, indent=2)
+            write_json_atomic(roles_path, self.roles)
         except Exception as e:
             logger.error("Failed to save roles: {}", str(e))
 
@@ -114,8 +149,7 @@ class EnterpriseSecurity:
         """Save encryption keys."""
         try:
             keys_path = self.security_path / "encryption_keys.json"
-            with open(keys_path, "w", encoding="utf-8") as f:
-                json.dump(self.encryption_keys, f, indent=2)
+            write_json_atomic(keys_path, self.encryption_keys)
         except Exception as e:
             logger.error("Failed to save encryption keys: {}", str(e))
 
@@ -336,7 +370,11 @@ class EnterpriseSecurity:
             "resource_id": resource_id,
             "details": details or {},
             "timestamp": datetime.now().isoformat(),
-            "ip_address": "system",  # In production, capture actual IP
+            # No request context exists for a local assistant, so there is
+            # no IP to record. Naming it honestly beats a "system" string
+            # that reads like a real captured address (audit L-6).
+            "ip_address": None,
+            "origin": "local-process",
             "user_agent": "asc-enterprise"
         }
         
@@ -396,72 +434,72 @@ class EnterpriseSecurity:
         data: str,
         encryption_key_id: str = "default"
     ) -> Dict[str, Any]:
-        """Encrypt sensitive data using configured encryption keys."""
-        
-        try:
-            # Get encryption key
-            key = self.encryption_keys.get(encryption_key_id)
-            if not key:
-                return {
-                    "success": False,
-                    "error": f"Encryption key {encryption_key_id} not found"
-                }
-            
-            # Simple XOR encryption for demonstration
-            # In production, use AES-256
-            key_bytes = key.encode()
-            data_bytes = data.encode()
-            
-            encrypted_bytes = bytes([data_bytes[i] ^ key_bytes[i % len(key_bytes)] for i in range(len(data_bytes))])
-            encrypted_data = encrypted_bytes.hex()
-            
-            return {
-                "success": True,
-                "encrypted_data": encrypted_data,
-                "encryption_key_id": encryption_key_id,
-                "message": "Data encrypted successfully"
-            }
-            
-        except Exception as e:
+        """Encrypt sensitive data using OS-backed protection.
+
+        This previously used repeating-key XOR ("for demonstration") with
+        the key stored in plaintext next to the ciphertext - not encryption
+        in any meaningful sense, while the method name and the surrounding
+        GDPR/audit features implied otherwise. Now uses Windows DPAPI, where
+        key material is held by the OS and tied to the current user account.
+        On a host without DPAPI it refuses rather than silently downgrading.
+        """
+        from core import secrets as os_secrets
+
+        if not os_secrets.is_available():
             return {
                 "success": False,
-                "error": f"Encryption failed: {str(e)}"
+                "not_implemented": True,
+                "error": (
+                    "No OS keystore available on this platform, and this build ships no "
+                    "cryptography library - refusing rather than applying weak encoding "
+                    "and calling it encryption."
+                ),
             }
+
+        protected = os_secrets.protect(str(data), description=f"VEGA:{encryption_key_id}")
+        if protected is None:
+            return {"success": False, "error": "OS encryption call failed."}
+
+        return {
+            "success": True,
+            "encrypted_data": protected,
+            "encryption_key_id": encryption_key_id,
+            "method": "windows-dpapi",
+            "message": "Data encrypted with OS-managed key material.",
+        }
 
     def decrypt_data(
         self,
         encrypted_data: str,
         encryption_key_id: str = "default"
     ) -> Dict[str, Any]:
-        """Decrypt data using configured encryption keys."""
-        
-        try:
-            key = self.encryption_keys.get(encryption_key_id)
-            if not key:
-                return {
-                    "success": False,
-                    "error": f"Encryption key {encryption_key_id} not found"
-                }
-            
-            # Simple XOR decryption
-            key_bytes = key.encode()
-            encrypted_bytes = bytes.fromhex(encrypted_data)
-            
-            decrypted_bytes = bytes([encrypted_bytes[i] ^ key_bytes[i % len(key_bytes)] for i in range(len(encrypted_bytes))])
-            decrypted_data = decrypted_bytes.decode()
-            
-            return {
-                "success": True,
-                "decrypted_data": decrypted_data,
-                "encryption_key_id": encryption_key_id,
-                "message": "Data decrypted successfully"
-            }
-            
-        except Exception as e:
+        """Decrypt data previously protected by encrypt_data."""
+        from core import secrets as os_secrets
+
+        if not os_secrets.is_available():
             return {
                 "success": False,
-                "error": f"Decryption failed: {str(e)}"
+                "not_implemented": True,
+                "error": "No OS keystore available on this platform.",
             }
+
+        plaintext = os_secrets.unprotect(str(encrypted_data))
+        if plaintext is None:
+            return {
+                "success": False,
+                "error": (
+                    "Could not decrypt. The value may not have been produced by this "
+                    "user account on this machine - DPAPI ciphertext is not portable."
+                ),
+            }
+
+        return {
+            "success": True,
+            "decrypted_data": plaintext,
+            "encryption_key_id": encryption_key_id,
+            "method": "windows-dpapi",
+            "message": "Data decrypted successfully.",
+        }
 
     def generate_encryption_key(
         self,

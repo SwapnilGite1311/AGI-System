@@ -16,10 +16,24 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 class BrowserDriver:
-    def __init__(self, headless: bool = True, browser: str = "chromium", browsers_path: Optional[str] = None):
+    def __init__(
+        self,
+        headless: bool = True,
+        browser: str = "chromium",
+        browsers_path: Optional[str] = None,
+        persistent_profile_dir: Optional[str] = None,
+    ):
         self.headless = headless
         self.browser_name = browser
         self.browsers_path = browsers_path
+        # When set, launches a real Chromium profile directory VEGA owns
+        # (not the user's actual personal Chrome profile - avoids lock
+        # conflicts if their own browser is open, and keeps automated
+        # actions out of their personal history/cookies) instead of an
+        # ephemeral context. The user logs into whatever sites they want
+        # VEGA to act on once, inside that profile; it persists across
+        # restarts since it's real profile-directory state on disk.
+        self.persistent_profile_dir = persistent_profile_dir
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
@@ -39,10 +53,26 @@ class BrowserDriver:
         if not browser_ctor:
             browser_ctor = self._playwright.chromium
 
-        self._browser = await browser_ctor.launch(headless=self.headless)
-        self._context = await self._browser.new_context()
-        self.page = await self._context.new_page()
-        logger.info("Playwright browser started: {} (headless={})", self.browser_name, self.headless)
+        if self.persistent_profile_dir:
+            Path(self.persistent_profile_dir).mkdir(parents=True, exist_ok=True)
+            # launch_persistent_context returns the BrowserContext directly -
+            # there is no separate Browser object in this mode.
+            self._context = await browser_ctor.launch_persistent_context(
+                self.persistent_profile_dir, headless=self.headless,
+            )
+            self._browser = None
+            logger.info(
+                "Playwright persistent profile started: {} (dir={})",
+                self.browser_name, self.persistent_profile_dir,
+            )
+        else:
+            self._browser = await browser_ctor.launch(headless=self.headless)
+            self._context = await self._browser.new_context()
+            logger.info("Playwright browser started: {} (headless={})", self.browser_name, self.headless)
+
+        # A persistent context launches with one blank tab already open in
+        # Chromium - reuse it instead of opening a second blank tab.
+        self.page = self._context.pages[0] if self._context.pages else await self._context.new_page()
 
     def _configure_browsers_path(self):
         """Use a configured/global Playwright browser cache when available."""

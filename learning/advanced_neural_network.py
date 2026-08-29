@@ -11,6 +11,10 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
+from core.config import load_config, data_dir
+
+from core.atomic_io import write_json_atomic
+
 try:
     import torch
     import torch.nn as nn
@@ -37,10 +41,9 @@ class AdvancedNeuralNetwork:
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize advanced neural network system."""
         
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = json.load(f)
-        
-        self.models_path = Path("data/advanced_models")
+        self.config = load_config(config_path)
+        # Project-relative, not cwd-relative (audit M-5).
+        self.models_path = data_dir(config_path) / "advanced_models"
         self.models_path.mkdir(parents=True, exist_ok=True)
         
         self.models = {}
@@ -371,11 +374,17 @@ class AdvancedNeuralNetwork:
         self,
         model_type: str = "feedforward",
         input_size: int = 10,
-        hidden_layers: List[int] = [64, 32],
+        hidden_layers: Optional[List[int]] = None,  # not [64,32]: one list shared across all calls
         output_size: int = 1
     ) -> Dict[str, Any]:
         """Create a deep learning model using PyTorch."""
-        
+
+        # A [64, 32] default in the signature is one list shared by every
+        # call; anything that mutated it would change the default for all
+        # later callers (audit L-5).
+        if hidden_layers is None:
+            hidden_layers = [64, 32]
+
         if not TORCH_AVAILABLE:
             return {
                 "success": False,
@@ -534,8 +543,7 @@ class AdvancedNeuralNetwork:
                 }
                 
                 metadata_path = self.models_path / f"{model_id}_metadata.json"
-                with open(metadata_path, "w", encoding="utf-8") as f:
-                    json.dump(metadata, f, indent=2)
+                write_json_atomic(metadata_path, metadata)
             
             else:
                 import joblib

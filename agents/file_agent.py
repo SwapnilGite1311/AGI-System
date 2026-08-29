@@ -12,6 +12,8 @@ from pathlib import Path
 from datetime import datetime
 from loguru import logger
 
+from core.config import load_config
+
 
 class FileAgent:
     """
@@ -26,21 +28,71 @@ class FileAgent:
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize file agent"""
         
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = json.load(f)
-        
+        self.config = load_config(config_path)
         self.home = Path.home()
-        
+        # Anchored to the project, not the working directory: the delete
+        # guard used to widen to whatever directory ASC happened to be
+        # launched from, so starting it in C:\ authorised deleting
+        # C:\Windows (audit H-2).
+        self.project_root = Path(config_path).resolve().parent.parent
+
         # Load file_agent config
         fa_config = self.config.get("file_agent", {})
-        self.undo_manifest_dir = Path(fa_config.get("undo_manifest_dir", "./data/undo_manifests"))
+        configured_undo = Path(fa_config.get("undo_manifest_dir", "./data/undo_manifests"))
+        self.undo_manifest_dir = (
+            configured_undo if configured_undo.is_absolute()
+            else self.project_root / configured_undo
+        )
         self.undo_manifest_dir.mkdir(parents=True, exist_ok=True)
         self.max_undo_manifests = int(fa_config.get("max_undo_manifests", 20))
         self.hash_algo = fa_config.get("duplicate_hash_algorithm", "md5")
         self.max_files_for_hash = int(fa_config.get("max_files_for_hash", 5000))
         
         logger.info("📁 File Agent initialized (enhanced)")
-    
+
+    def _is_safe_path(self, path: Path) -> bool:
+        """Restrict destructive operations to the user's home directory or
+        the project tree.
+
+        Model-supplied and regex-extracted paths reach delete_file/
+        delete_folder with no other validation; a hallucinated or
+        misparsed path could otherwise delete anything the OS permissions
+        allow. This does not affect create/read/list operations, which are
+        far lower risk than irreversible deletion.
+
+        The second root used to be Path.cwd(), which meant the guard's
+        breadth depended on where ASC was launched from - starting it in
+        C:\\ authorised deleting C:\\Windows and C:\\Program Files, silently
+        turning the guard off (audit H-2). It is now anchored to the project
+        directory, which does not move.
+
+        Even inside an allowed root, a handful of paths are never
+        deletable: the project's own source and data, and the user's
+        top-level home directory itself.
+        """
+        try:
+            resolved = path.resolve()
+        except Exception:
+            return False
+
+        # Never delete the project's own code/state, or a whole home dir.
+        for forbidden in (self.project_root, self.project_root / "data",
+                          self.project_root / "core", self.project_root / "agents",
+                          self.home):
+            try:
+                if resolved == forbidden.resolve():
+                    return False
+            except Exception:
+                continue
+
+        for root in (self.home, self.project_root):
+            try:
+                resolved.relative_to(root.resolve())
+                return True
+            except ValueError:
+                continue
+        return False
+
     # ============= BASIC FILE OPERATIONS =============
     
     def create_file(self, filepath: str, content: str = "") -> Dict[str, Any]:
@@ -87,9 +139,14 @@ class FileAgent:
     
     def delete_file(self, filepath: str) -> Dict[str, Any]:
         """Delete a file"""
-        
+
         try:
             path = Path(filepath)
+            if not self._is_safe_path(path):
+                return {
+                    "success": False,
+                    "error": f"Refusing to delete outside your home or working directory: {path}",
+                }
             if path.is_file():
                 path.unlink()
                 logger.info("🗑️ Deleted file: {}", filepath)
@@ -112,6 +169,11 @@ class FileAgent:
         
         try:
             path = Path(folderpath)
+            if not self._is_safe_path(path):
+                return {
+                    "success": False,
+                    "error": f"Refusing to delete outside your home or working directory: {path}",
+                }
             if path.is_dir():
                 if recursive:
                     shutil.rmtree(path)
@@ -224,7 +286,8 @@ class FileAgent:
                         "is_file": item.is_file(),
                         "is_folder": item.is_dir()
                     })
-                except:
+                # Exception, not bare: a bare except swallowed Ctrl+C mid-scan.
+                except Exception:
                     continue
             
             logger.debug("📋 Listed {} items in {}", len(files), folderpath)
@@ -456,13 +519,19 @@ class FileAgent:
             return {"success": False, "error": str(e)}
 
     def _calculate_file_hash(self, file_path: Path) -> Optional[str]:
-        """Helper to hash a file."""
+        """Hash a file's full content in chunks.
+
+        Previously only the first 1MB was hashed, so two large files sharing
+        the same size and leading bytes (e.g. two videos with identical
+        headers) were reported as duplicates even when their content
+        diverged later - a false positive a user could act on by deleting a
+        genuinely distinct file.
+        """
         try:
             hasher = hashlib.new(self.hash_algo)
-            # Read first 1MB or full file if smaller
             with open(file_path, "rb") as f:
-                buf = f.read(1024 * 1024)
-                hasher.update(buf)
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    hasher.update(chunk)
             return hasher.hexdigest()
         except Exception:
             return None
@@ -626,7 +695,10 @@ class FileAgent:
                                 "name": item.name,
                                 "match_type": "content"
                             })
-                    except:
+                    # Not a bare except: that also caught KeyboardInterrupt,
+                    # so Ctrl+C during a large scan was absorbed and the loop
+                    # kept going (audit M-7).
+                    except Exception:
                         pass
             
             logger.debug("🔍 Found {} matches", len(results))
