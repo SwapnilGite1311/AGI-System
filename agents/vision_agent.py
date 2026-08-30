@@ -184,6 +184,31 @@ class VisionAgent:
 
         except Exception as exc:
             logger.error("Vision understanding failed: {}", str(exc))
+
+            # llava:7b needs ~4.7 GB and this machine has 4 GB of VRAM, so
+            # the runner dies with GGML_ASSERT(buffer) failed and the whole
+            # feature returned an error. OCR reads the same screen using a
+            # fraction of the memory - degraded, but genuinely useful, and
+            # far better than telling the user the request failed.
+            try:
+                text = (self.extract_text_ocr() or "").strip()
+            except Exception:
+                text = ""
+
+            if text:
+                logger.info("Vision model unavailable; answered from OCR instead.")
+                return {
+                    "description": text[:4000],
+                    "source": "ocr_fallback",
+                    "degraded": True,
+                    "note": (
+                        "The image model would not fit in this GPU's memory, "
+                        "so this is the text read off the screen rather than a "
+                        "visual description."
+                    ),
+                    "timestamp": datetime.now().isoformat(),
+                }
+
             return {"error": str(exc)}
 
     async def find_ui_element(self, element_description: str) -> Dict[str, Any]:

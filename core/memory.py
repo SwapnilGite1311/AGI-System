@@ -676,7 +676,9 @@ class MemorySystem:
         conn.close()
 
         if embedded:
-            logger.info("Backfilled {} episode embeddings ({} remaining)", embedded, remaining)
+            # Background maintenance. Printing it mid-session interrupted the
+            # prompt with something the user has no use for.
+            logger.debug("Backfilled {} episode embeddings ({} remaining)", embedded, remaining)
         return {"embedded": embedded, "remaining": remaining}
 
     def prune_episodes(self, keep: int = 2000) -> int:

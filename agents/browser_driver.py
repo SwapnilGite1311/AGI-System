@@ -297,6 +297,46 @@ class BrowserDriver:
                 textNodes.push(walker.currentNode);
             }
 
+            // ---- ARIA first -------------------------------------------
+            // Google Forms (and most modern form builders) put the question
+            // text in a separate element and point at it with
+            // aria-labelledby; the inputs carry no id, name or <label>. The
+            // text-node walk below cannot see that relationship, so a real
+            // Google Form yielded zero selectors.
+            const ariaInputs = Array.from(
+                document.querySelectorAll('input,textarea,select')
+            );
+            function ariaTextFor(el) {
+                const direct = (el.getAttribute('aria-label') || '').trim();
+                if (direct) return direct;
+                const ref = el.getAttribute('aria-labelledby');
+                if (!ref) return '';
+                const parts = [];
+                for (const id of ref.split(/\s+/)) {
+                    const node = document.getElementById(id);
+                    if (node) parts.push((node.innerText || node.textContent || '').trim());
+                }
+                return parts.filter(Boolean).join(' ').trim();
+            }
+            function selectorFor(el, base) {
+                if (el.id) return {selector: '#' + el.id, confidence: base};
+                if (el.name) return {selector: '[name="' + el.name + '"]', confidence: base - 0.05};
+                return {selector: 'xpath=' + getXPathForElement(el), confidence: base - 0.15};
+            }
+            for (let lbl of labels) {
+                if (results[lbl] && results[lbl].selector) continue;
+                const want = lbl.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+                if (!want) continue;
+                for (let el of ariaInputs) {
+                    const got = ariaTextFor(el).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+                    if (!got) continue;
+                    if (got === want || got.includes(want) || want.includes(got)) {
+                        results[lbl] = selectorFor(el, 0.9);
+                        break;
+                    }
+                }
+            }
+
             for (let lbl of labels) {
                 if (results[lbl] && results[lbl].selector) continue;
                 const lower = lbl.toLowerCase();
@@ -393,6 +433,33 @@ class BrowserDriver:
             const inputs = Array.from(document.querySelectorAll('input,textarea,select'));
             for (let inp of inputs) {
                 let txt = (inp.getAttribute('aria-label') || inp.getAttribute('placeholder') || '').trim();
+
+                // aria-labelledby: the label lives in a separate element that
+                // is not a <label> at all. Google Forms builds every question
+                // this way, so discovery found zero fields on one and every
+                // selector came back null.
+                if (!txt) {
+                    const ref = inp.getAttribute('aria-labelledby');
+                    if (ref) {
+                        const parts = [];
+                        for (const id of ref.split(/\s+/)) {
+                            const node = document.getElementById(id);
+                            if (node) parts.push((node.innerText || node.textContent || '').trim());
+                        }
+                        txt = parts.filter(Boolean).join(' ').trim();
+                    }
+                }
+
+                // Last resort: the nearest preceding heading-ish text inside
+                // the same question block.
+                if (!txt) {
+                    const block = inp.closest('[role="listitem"], .freebirdFormviewerViewItemsItemItem, li, fieldset, .form-group');
+                    if (block) {
+                        const head = block.querySelector('[role="heading"], legend, h1, h2, h3, h4, label');
+                        if (head) txt = (head.innerText || '').trim();
+                    }
+                }
+
                 if (!txt) {
                     const prev = inp.previousElementSibling;
                     if (prev && (prev.tagName||'').toLowerCase() === 'label') txt = (prev.innerText||'').trim();

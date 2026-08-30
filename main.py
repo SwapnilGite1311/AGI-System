@@ -460,7 +460,10 @@ class AutonomousSystemController:
             engine.runAndWait()
             return
         except Exception as exc:
-            logger.warning("SAPI speech unavailable ({}), trying piper.", str(exc)[:80])
+            # Debug, not warning: falling back to piper is the normal path on
+            # this machine, and a startup WARNING made a working system
+            # look broken before the user had typed anything.
+            logger.debug("SAPI speech unavailable ({}), using piper.", str(exc)[:80])
 
         # --- Tier 2: piper via voice server ---
         if not self.voice_service_available:
@@ -1070,6 +1073,13 @@ class AutonomousSystemController:
         "check", "play", "suggest", "recommend", "close", "read", "analyze",
         "schedule", "remind", "call", "email", "write", "scan", "backup",
         "compare", "buy", "order", "book", "clean", "sort", "rename",
+        # Added after live sessions: real phrasings that fell through the
+        # gate and were answered as small talk.
+        "tidy", "tidy up", "clear", "clear out", "empty", "archive",
+        "summarise", "summarize", "explain", "research", "draft", "generate",
+        "install", "update", "upgrade", "restart", "stop", "kill", "print",
+        "add", "remove", "delete", "mark", "set", "assign", "schedule",
+        "convert", "extract", "export", "import", "record", "translate",
     )
 
     # Question openers. Real requests are often phrased as questions with no
@@ -1173,8 +1183,18 @@ class AutonomousSystemController:
         # _execute_directly's open_application handler, so autonomy's role
         # here is heuristics deterministic parsing genuinely cannot resolve:
         # 'currently opened apps', bare-open clarification flows, etc.
-        if autonomy and autonomy.should_handle(command, complexity):
-            return {"tier": "autonomous", "complexity": complexity, "source": "autonomy"}
+        # Deferred: see _autonomy_fallback below. should_handle matches on
+        # bare verbs ("create", "make", "write", "research", "report",
+        # "file", "folder"), which is nearly every task-shaped sentence, so
+        # it claimed commands before the model-backed router ever saw them.
+        # Measured: the router produces a correct 2-step plan for "research
+        # X and write me a report", while autonomy produced a web search and
+        # an empty file. The model is better at this than the keyword list,
+        # so the model goes first and autonomy catches what it cannot
+        # resolve.
+        autonomy_would_handle = bool(
+            autonomy and autonomy.should_handle(command, complexity)
+        )
 
         # Multi-action UNPARSED commands decompose deterministically - this
         # is the broader heuristic (includes "2+ verbs joined by and/then"
@@ -1190,7 +1210,10 @@ class AutonomousSystemController:
         # Nonsense gate: commands with no action verbs, no digits, and no
         # question mark are almost certainly gibberish or chat - never plan
         # tasks from them ("flurbick wibble wobble" used to become a task).
-        if not self._looks_actionable(normalized):
+        # autonomy_would_handle is a second opinion on "is this a task?".
+        # Without it, "currently opened apps" fell to the nonsense gate
+        # ("opened" is not the verb "open") and was answered as small talk.
+        if not self._looks_actionable(normalized) and not autonomy_would_handle:
             return {"tier": "conversation", "complexity": "simple", "source": "nonsense_gate"}
 
         similar = self.agents["learning"].find_similar_success(command)
@@ -1291,6 +1314,9 @@ class AutonomousSystemController:
                         "intent": {"type": action},
                         "params": decision.get("params", {}),
                     }
+            if autonomy_would_handle:
+                return {"tier": "autonomous", "complexity": complexity,
+                        "source": "autonomy_fallback"}
             return {"tier": "single_model", "complexity": complexity, "source": "council"}
 
         return {"tier": "sequential", "complexity": complexity, "source": "council"}
@@ -5133,16 +5159,53 @@ class AutonomousSystemController:
                     from core.console import prompt_input
 
                     if getattr(self, "_voice_mode", False):
-                        command = (await asyncio.to_thread(self._listen_for_voice_command) or "").strip()
-                        if not command:
-                            # Nothing heard - keep listening rather than
-                            # silently dropping back to the text prompt.
+                        # The listener blocks on the microphone inside a
+                        # worker thread. asyncio cannot cancel a thread that
+                        # is already running, so Ctrl+C surfaced here as
+                        # CancelledError from to_thread and tore the whole
+                        # process down - three forced restarts in one live
+                        # session. Shield the await and handle both.
+                        try:
+                            command = (await asyncio.shield(
+                                asyncio.to_thread(self._listen_for_voice_command)
+                            ) or "").strip()
+                        except (asyncio.CancelledError, KeyboardInterrupt):
+                            self._voice_mode = False
+                            self._voice_silence_streak = 0
+                            print("\n\nVoice mode OFF - back to typing.\n")
                             continue
+
+                        if not command:
+                            # Repeated silence means the mic has stopped
+                            # producing usable audio (it stopped responding
+                            # entirely mid-session). Say so and hand control
+                            # back rather than looping invisibly forever.
+                            streak = getattr(self, "_voice_silence_streak", 0) + 1
+                            self._voice_silence_streak = streak
+                            if streak == 1:
+                                print("  (didn't catch that - speak again, or say 'voice off')")
+                            elif streak >= 4:
+                                self._voice_mode = False
+                                self._voice_silence_streak = 0
+                                print("\nI stopped hearing anything after several tries, "
+                                      "so I've switched back to typing.")
+                                print("Type 'voice' to try again.\n")
+                            continue
+
+                        self._voice_silence_streak = 0
                         # Echo what was heard, labelled, so the transcript
                         # reads like a conversation instead of bare text.
                         print(f"You (voice): {command}")
-                        if command.lower().rstrip(".!?") in ("voice off", "stop listening", "text mode", "exit voice"):
+
+                        # Whisper adds punctuation and casing, so an exact
+                        # match missed "Voice off." - the exit phrase did not
+                        # work in the live session.
+                        spoken = re.sub(r"[^a-z ]", "", command.lower()).strip()
+                        if spoken in ("voice off", "voiceoff", "stop listening",
+                                      "text mode", "exit voice", "stop voice",
+                                      "turn off voice", "switch to typing"):
                             self._voice_mode = False
+                            self._voice_silence_streak = 0
                             print("\nVoice mode OFF - back to typing.\n")
                             continue
                     else:
