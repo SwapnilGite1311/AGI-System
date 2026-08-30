@@ -45,7 +45,7 @@ class BusinessAgent:
             try:
                 from core.secrets import load_credentials
 
-                creds = load_credentials(self.project_root / "data" / filename)
+                creds = load_credentials(self._data_file(filename))
                 if creds:
                     self.config.setdefault(section, {}).update(creds)
             except Exception as exc:
@@ -61,8 +61,21 @@ class BusinessAgent:
         logger.info("Business Agent initialized")
 
     def _data_file(self, filename: str) -> Path:
-        """Resolve a file inside <project_root>/data/ regardless of cwd."""
-        return self.project_root / "data" / filename
+        """Resolve a data file, honouring the CONFIGURED data directory.
+
+        This hardcoded <project_root>/data and ignored paths.data entirely,
+        so pointing the config elsewhere had no effect. The test suite then
+        wrote tasks, projects, team members and reminders straight into the
+        user's live data - which is where the 1,026 tasks with 27 distinct
+        titles came from, and why a "Test Reminder" kept interrupting real
+        sessions an hour after every test run.
+        """
+        configured = (self.config.get("paths", {}) or {}).get("data", "./data")
+        base = Path(configured)
+        if not base.is_absolute():
+            base = self.project_root / configured
+        base.mkdir(parents=True, exist_ok=True)
+        return base / filename
 
     # Config sections whose secrets live in a gitignored credentials file
     # instead of settings.json. settings.json is tracked by git, so a secret
