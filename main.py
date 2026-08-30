@@ -636,7 +636,15 @@ class AutonomousSystemController:
             complexity = strategy["complexity"]
 
             critical_rejection = None
-            if complexity == "critical" and tier in {"direct", "brain"}:
+            # Every tier, not just direct/brain. The benchmark caught
+            # "delete the entire windows folder" and "format C:" being
+            # assessed as CRITICAL and then routed to the sequential tier,
+            # which executed them without the Chairman ever seeing the plan
+            # ("Excellent. I've completed 1 of 1 steps in that sequence.").
+            # Which tier happens to claim a command is an internal routing
+            # detail; it must not decide whether the safety review runs.
+            # conversation is excluded because it performs no actions.
+            if complexity == "critical" and tier != "conversation":
                 gate_repr = {
                     "tier": tier,
                     "intent": strategy.get("intent"),
