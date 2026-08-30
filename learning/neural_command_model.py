@@ -208,6 +208,13 @@ class NeuralCommandModel:
         return "general"
 
     def _build_vocabulary(self, commands: List[str]) -> Dict[str, int]:
+        # Prefer embeddings: probe once, and if the model answers, record the
+        # dimensionality instead of a word list.
+        if self.USE_EMBEDDINGS and commands:
+            probe = self._embedding(commands[0])
+            if probe:
+                return {"__embedding__": len(probe)}
+
         counts: Counter[str] = Counter()
         for command in commands:
             counts.update(self._tokens(command))
@@ -221,7 +228,67 @@ class NeuralCommandModel:
             if token not in STOP_WORDS and len(token) > 1
         ]
 
+    # Semantic features. A bag-of-words vector can only represent words the
+    # vocabulary already holds, so a phrase built entirely from unseen words
+    # becomes the zero vector and the model is guessing. Measured on held-out
+    # phrasings: "what's eating my ram" and "give me a directory listing"
+    # shared ZERO tokens with a 256-word vocabulary, so no quantity of extra
+    # training data could have helped them.
+    #
+    # Embeddings put paraphrases near each other regardless of wording, and
+    # this project already runs an embedding model locally for memory recall.
+    # Bag-of-words remains the fallback when it is unavailable, so nothing
+    # breaks if the model is not pulled.
+    USE_EMBEDDINGS = True
+    _embed_cache: Dict[str, List[float]] = {}
+
+    def _embedding(self, command: str) -> Optional[List[float]]:
+        """Sentence embedding for a command, or None if unavailable."""
+        if not self.USE_EMBEDDINGS:
+            return None
+        key = (command or "").strip().lower()
+        if not key:
+            return None
+        if key in self._embed_cache:
+            return self._embed_cache[key]
+        try:
+            from core.embeddings import embed
+
+            vector = embed(command)
+        except Exception:
+            vector = None
+        if vector:
+            # Bounded: this is a per-process cache over a training corpus,
+            # not a long-lived store.
+            if len(self._embed_cache) > 4000:
+                self._embed_cache.clear()
+            self._embed_cache[key] = vector
+        return vector
+
+    @staticmethod
+    def _feature_width(vocabulary: Dict[str, int]) -> int:
+        """How wide a feature vector this vocabulary produces.
+
+        For bag-of-words that is the number of words. For embeddings the
+        vocabulary holds a single marker entry whose VALUE is the width, so
+        len() would report 1 and the input layer would be built 767 columns
+        too narrow.
+        """
+        if vocabulary and "__embedding__" in vocabulary:
+            return int(vocabulary["__embedding__"])
+        return len(vocabulary)
+
     def _vectorize(self, command: str, vocabulary: Dict[str, int]) -> List[float]:
+        # vocabulary == {"__embedding__": dimensions} marks a model that was
+        # fitted on embeddings; it must be vectorised the same way at predict
+        # time or the weights mean nothing.
+        if vocabulary and "__embedding__" in vocabulary:
+            vector = self._embedding(command)
+            if vector:
+                length = math.sqrt(sum(v * v for v in vector)) or 1.0
+                return [v / length for v in vector]
+            return [0.0] * int(vocabulary["__embedding__"])
+
         vector = [0.0] * len(vocabulary)
         tokens = self._tokens(command)
         if not tokens:
@@ -267,8 +334,9 @@ class NeuralCommandModel:
         y_train = torch.tensor([row[1] for row in train_rows], dtype=torch.long)
         sample_weights = torch.tensor([row[2] for row in train_rows], dtype=torch.float32)
 
-        hidden_size = min(64, max(8, len(vocabulary) // 2))
-        model = _CommandRouteNet(len(vocabulary), hidden_size, len(labels))
+        width = self._feature_width(vocabulary)
+        hidden_size = min(64, max(8, width // 2))
+        model = _CommandRouteNet(width, hidden_size, len(labels))
         optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate)
         loss_fn = nn.CrossEntropyLoss(reduction="none")
 
@@ -390,7 +458,7 @@ class NeuralCommandModel:
         if not labels or not vocabulary:
             return []
 
-        model = _CommandRouteNet(len(vocabulary), int(self.state.get("hidden_size", 8)), len(labels))
+        model = _CommandRouteNet(self._feature_width(vocabulary), int(self.state.get("hidden_size", 8)), len(labels))
         tensors = {
             key: torch.tensor(value, dtype=torch.float32)
             for key, value in self.state.get("weights", {}).items()
@@ -411,7 +479,7 @@ class NeuralCommandModel:
         for label, vectors in grouped.items():
             if not vectors:
                 continue
-            centroid = [0.0] * len(vocabulary)
+            centroid = [0.0] * self._feature_width(vocabulary)
             for vector in vectors:
                 for idx, value in enumerate(vector):
                     centroid[idx] += value
