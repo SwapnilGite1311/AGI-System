@@ -174,6 +174,10 @@ def _compare() -> int:
     print("-" * 78)
     for path in runs:
         run = json.loads(path.read_text(encoding="utf-8"))
+        # train.py writes its own result shape into the same directory;
+        # only benchmark runs have by_category.
+        if "by_category" not in run:
+            continue
         worst = sorted(run["by_category"].items(), key=lambda kv: kv[1]["rate"])[:3]
         summary = "  ".join(f"{c}:{s['rate']:.0%}" for c, s in worst)
         print(f"{run['label'][:22]:22} {run['run_at'][:16]:18} {run['score']:6.1%}  {summary}")
