@@ -1592,6 +1592,62 @@ class AutonomousSystemController:
         matched before the catch-all. Returns None for anything that is not
         an unambiguous structured request, so every other tier is untouched.
         """
+        # --- add a person to the team -------------------------------------
+        # "add priya to the team" reached the conversation tier, which
+        # replied "Sure thing, Priya added." and added nobody. Claiming an
+        # action that never happened is the worst failure mode this system
+        # has, so this phrasing gets a real branch.
+        member = re.search(
+            r"\b(?:add|register|onboard)\s+(?P<name>[A-Za-z][A-Za-z .'-]{1,40}?)"
+            r"\s+(?:to|into)\s+(?:the\s+)?(?:team|staff|roster)\s*$",
+            command, re.IGNORECASE,
+        )
+        if member:
+            return {
+                "type": "add_team_member",
+                "name": member.group("name").strip(),
+                "role": "member",
+            }
+
+        # --- complete a task by NAME, not by uuid --------------------------
+        # "mark call supplier as done" failed with "Task ID is required":
+        # the handler only accepted an id, which a person never has.
+        done = re.search(
+            r"\b(?:mark|set|flag)\s+(?P<title>.+?)\s+as"
+            r"\s+(?:done|complete|completed|finished)\s*$",
+            command, re.IGNORECASE,
+        )
+        if done:
+            return {"type": "complete_task", "title": done.group("title").strip()}
+
+        # --- read the screen: OCR, not a web search ------------------------
+        # "read the text on my screen" was routed to web search and failed
+        # with "Search query missing".
+        if re.search(r"\btext\b.*\b(?:screen|display|monitor)\b", normalized) or \
+           re.search(r"\bread\s+(?:my|the)\s+screen\b", normalized):
+            return {"type": "extract_text"}
+
+        # --- free disk space is not folder size ----------------------------
+        # "how much disk do i have left" analysed the project folder and
+        # reported 54 MB, which is a confident wrong answer.
+        if re.search(r"\b(?:disk|drive|storage|space)\b.*\b(?:left|free|remaining|available)\b",
+                     normalized) or \
+           re.search(r"\b(?:free|available|remaining)\s+(?:disk|drive|storage)\b", normalized):
+            return {"type": "disk_drives"}
+
+        # --- spreadsheet means spreadsheet ---------------------------------
+        # "create a spreadsheet of my tasks" listed the tasks instead,
+        # because the task branch matched first.
+        sheet = re.search(
+            r"\b(?:create|make|generate|build|export)\s+(?:me\s+)?(?:a|an)?\s*"
+            r"(?:spreadsheet|excel|xlsx|csv)\b"
+            r"(?:\s+(?:of|for|with|from)\s+(?P<subject>.+?))?\s*$",
+            command, re.IGNORECASE,
+        )
+        if sheet:
+            subject = (sheet.group("subject") or "data").strip()
+            return {"type": "create_spreadsheet", "title": subject, "subject": subject}
+
         # --- tenant creation: a domain here is data, not a place to visit ---
         tenant = re.search(
             r"\b(?:create|add|register|set\s*up)\s+(?:a\s+)?tenant\s+"
@@ -2875,11 +2931,49 @@ class AutonomousSystemController:
             )
 
         elif intent_type == "complete_task":
+            # A person says "mark call supplier as done", never a uuid. This
+            # demanded task_id and failed with "Task ID required", which made
+            # the feature unreachable from natural language.
             task_id = intent.get("task_id")
+            title = (intent.get("title") or "").strip()
+
+            if not task_id and title:
+                wanted = title.lower()
+                tasks = getattr(self.agents["business"], "tasks", []) or []
+                open_tasks = [
+                    t for t in tasks
+                    if str(t.get("status", "")).lower() != "completed"
+                ]
+                exact = [t for t in open_tasks if str(t.get("title", "")).lower() == wanted]
+                partial = [t for t in open_tasks if wanted in str(t.get("title", "")).lower()]
+                matches = exact or partial
+
+                if len(matches) == 1:
+                    task_id = matches[0].get("id")
+                elif len(matches) > 1:
+                    # Ambiguous: ask rather than completing the wrong one.
+                    names = [str(t.get("title", "")) for t in matches[:5]]
+                    step_result = {
+                        "success": False,
+                        "error": (f"{len(matches)} open tasks match '{title}': "
+                                  + ", ".join(names)
+                                  + ". Which one did you mean?"),
+                        "candidates": names,
+                    }
+                    task_id = None
+                    title = ""
+                else:
+                    step_result = {
+                        "success": False,
+                        "error": f"No open task matching '{title}'.",
+                    }
+                    title = ""
+
             if task_id:
                 step_result = self.agents["business"].update_task_status(task_id, "completed")
-            else:
-                step_result = {"success": False, "error": "Task ID required for completion"}
+            elif title:
+                step_result = {"success": False,
+                               "error": "Tell me which task to complete."}
 
         elif intent_type == "create_project":
             step_result = self.agents["business"].create_project(
@@ -3389,6 +3483,45 @@ class AutonomousSystemController:
                 step_result = {"success": False, "error": str(vision_result["error"])}
             else:
                 step_result = {"success": True, **vision_result}
+
+        elif intent_type == "extract_text":
+            # OCR the screen. Without this branch the intent fell through to
+            # the web tool, which received no query and failed with
+            # "Search query missing" - a screen-reading request answered by
+            # a broken web search.
+            text = await asyncio.to_thread(self.agents["vision"].extract_text_ocr)
+            cleaned = (text or "").strip()
+            if cleaned:
+                step_result = {
+                    "success": True,
+                    "screen_text": cleaned[:4000],
+                    "characters": len(cleaned),
+                }
+            else:
+                step_result = {
+                    "success": False,
+                    "error": ("I could not read any text from the screen. "
+                              "Tesseract may not be installed, or the screen "
+                              "may have no readable text on it."),
+                }
+
+        elif intent_type == "create_spreadsheet":
+            # "create a spreadsheet of my tasks" used to list the tasks
+            # instead of producing a file.
+            subject = intent.get("subject") or intent.get("title") or "data"
+            rows = []
+            if re.search(r"\btasks?\b", str(subject), re.IGNORECASE):
+                tasks = getattr(self.agents["business"], "tasks", []) or []
+                rows = [["Title", "Status", "Priority", "Due"]] + [
+                    [t.get("title", ""), t.get("status", ""),
+                     t.get("priority", ""), t.get("due_date", "")]
+                    for t in tasks[:500]
+                ]
+            step_result = self._execute_document_action(
+                "create_spreadsheet",
+                {"title": subject, "subject": subject, "rows": rows},
+                command,
+            )
 
         elif intent_type == "screenshot":
             shot = await asyncio.to_thread(self.agents["vision"].capture_screen, save=True)
