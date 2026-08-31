@@ -99,7 +99,8 @@
     "model_finetuning": false,
     "training_interval": "daily",
     "history_limit": 500,
-    "adaptive_min_confidence": 0.82
+    "adaptive_min_confidence": 0.82,
+    "route_min_confidence": 0.4
   },
   "system_agent": {
     "command_history_limit": 200,

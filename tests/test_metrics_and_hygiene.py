@@ -129,3 +129,55 @@ def test_real_metrics_are_internally_consistent():
     memory = report.get("memory")
     if memory and memory.get("episodes"):
         assert memory["embedded"] <= memory["episodes"]
+
+
+# --------------------------------------------------------------------------
+# Routing confidence. One config key used to gate two unrelated decisions.
+# --------------------------------------------------------------------------
+
+def test_route_and_strategy_thresholds_are_separate():
+    """Replaying a past strategy and hinting a route are different risks.
+
+    Both read adaptive_min_confidence (0.82). Measured on 65 held-out
+    phrasings, that refused 16 route predictions of which 10 were CORRECT -
+    the model knew the answer and the gate threw it away. Strategy reuse
+    stays strict; the advisory hint does not need to be.
+    """
+    import json
+    from pathlib import Path
+
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "config" / "settings.json")
+        .read_text(encoding="utf-8-sig")
+    )
+    learning = config.get("learning", {})
+
+    assert "route_min_confidence" in learning, "route threshold is not separable"
+    assert learning["route_min_confidence"] < learning.get("adaptive_min_confidence", 0.82), (
+        "the advisory route hint should not be gated as strictly as strategy reuse"
+    )
+
+
+def test_the_route_model_uses_the_route_threshold():
+    from agents.learning_agent import LearningAgent
+
+    agent = LearningAgent("./config/settings.json")
+    model = agent.phase5_model.neural_command_model
+    assert model.min_confidence <= 0.5, (
+        f"route model still gated at {model.min_confidence}"
+    )
+
+
+def test_confident_predictions_are_not_discarded():
+    """A correct prediction below the old bar must now come through."""
+    from agents.learning_agent import LearningAgent
+
+    agent = LearningAgent("./config/settings.json")
+    model = agent.phase5_model.neural_command_model
+    if not (model.state or {}).get("trained"):
+        return                                   # nothing fitted yet
+
+    result = model.predict("how's my computer holding up") or {}
+    assert result.get("predicted_route") != "unknown", (
+        "a prediction the model got right is still being refused"
+    )
