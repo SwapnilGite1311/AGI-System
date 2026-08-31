@@ -1,0 +1,311 @@
+{
+  "run_at": "2026-08-31T20:29:57",
+  "multistep_version": "1.1",
+  "tiers": {
+    "mode": "tiers",
+    "passed": 5,
+    "total": 18,
+    "rate": 0.278,
+    "median_seconds": 13.3,
+    "rows": [
+      {
+        "id": "M1",
+        "command": "check how much disk space is free and save it to a file called disk_report.txt",
+        "passed": false,
+        "detail": "no disk_report.txt produced",
+        "seconds": 2.7,
+        "steps": 1
+      },
+      {
+        "id": "M3",
+        "command": "find out what my CPU usage is and write a short summary to cpu_summary.txt",
+        "passed": false,
+        "detail": "no cpu_summary.txt produced",
+        "seconds": 20.5,
+        "steps": 1
+      },
+      {
+        "id": "M7",
+        "command": "count how many tasks I have and save that number to task_count.txt",
+        "passed": false,
+        "detail": "file holds no number",
+        "seconds": 54.8,
+        "steps": 4
+      },
+      {
+        "id": "M2",
+        "command": "create a task called integration probe then list the tasks to confirm it exists",
+        "passed": false,
+        "detail": "created it but never read it back, so it was not confirmed",
+        "seconds": 0.6,
+        "steps": 2
+      },
+      {
+        "id": "M4",
+        "command": "add nadia to the team and then show me the team list",
+        "passed": false,
+        "detail": "added but never listed back",
+        "seconds": 0.6,
+        "steps": 2
+      },
+      {
+        "id": "M5",
+        "command": "create a file called chain_a.txt with content step one, then search for files named chain_a to confirm it exists",
+        "passed": false,
+        "detail": "chain_a.txt was never created",
+        "seconds": 37.4,
+        "steps": 2
+      },
+      {
+        "id": "M8",
+        "command": "create a task called followup call and then mark it as done",
+        "passed": false,
+        "detail": "created but still 'pending'",
+        "seconds": 0.7,
+        "steps": 2
+      },
+      {
+        "id": "M9",
+        "command": "create a folder called probe_dir and then list the files to confirm it is there",
+        "passed": false,
+        "detail": "probe_dir was never created",
+        "seconds": 28.6,
+        "steps": 2
+      },
+      {
+        "id": "M10",
+        "command": "add two team members, first omar then lena, and list the team afterwards",
+        "passed": false,
+        "detail": "never added: omar, lena",
+        "seconds": 0.4,
+        "steps": 3
+      },
+      {
+        "id": "M6",
+        "command": "how many tasks do I have and does that seem like a lot",
+        "passed": false,
+        "detail": "no count produced",
+        "seconds": 26.9,
+        "steps": 1
+      },
+      {
+        "id": "M11",
+        "command": "check my system status and tell me whether memory looks healthy",
+        "passed": true,
+        "detail": "",
+        "seconds": 1.2,
+        "steps": 1
+      },
+      {
+        "id": "M12",
+        "command": "look at my drives and tell me which one has the most free space",
+        "passed": true,
+        "detail": "",
+        "seconds": 32.8,
+        "steps": 1
+      },
+      {
+        "id": "M13",
+        "command": "search my files for anything called chain_a and tell me if you found it",
+        "passed": true,
+        "detail": "",
+        "seconds": 1.0,
+        "steps": 1
+      },
+      {
+        "id": "M14",
+        "command": "take a screenshot and then tell me it was saved",
+        "passed": false,
+        "detail": "no screenshot step",
+        "seconds": 0.9,
+        "steps": 2
+      },
+      {
+        "id": "M15",
+        "command": "find out how many team members there are and write it into a document called team_size",
+        "passed": false,
+        "detail": "no team_size document produced",
+        "seconds": 13.3,
+        "steps": 1
+      },
+      {
+        "id": "M16",
+        "command": "make a spreadsheet of my tasks and tell me how many rows it has",
+        "passed": true,
+        "detail": "",
+        "seconds": 3.3,
+        "steps": 1
+      },
+      {
+        "id": "M17",
+        "command": "open the file definitely_not_here_9x7.txt and if that fails create it instead",
+        "passed": false,
+        "detail": "did not fall back to creating the file",
+        "seconds": 32.4,
+        "steps": 1
+      },
+      {
+        "id": "M18",
+        "command": "mark the task called no_such_task_here as done and tell me if it was not found",
+        "passed": true,
+        "detail": "",
+        "seconds": 40.9,
+        "steps": 1
+      }
+    ]
+  },
+  "react": {
+    "mode": "react",
+    "passed": 6,
+    "total": 18,
+    "rate": 0.333,
+    "median_seconds": 6.1,
+    "rows": [
+      {
+        "id": "M1",
+        "command": "check how much disk space is free and save it to a file called disk_report.txt",
+        "passed": false,
+        "detail": "no disk_report.txt produced",
+        "seconds": 31.3,
+        "steps": 6
+      },
+      {
+        "id": "M3",
+        "command": "find out what my CPU usage is and write a short summary to cpu_summary.txt",
+        "passed": false,
+        "detail": "no cpu_summary.txt produced",
+        "seconds": 4.8,
+        "steps": 1
+      },
+      {
+        "id": "M7",
+        "command": "count how many tasks I have and save that number to task_count.txt",
+        "passed": false,
+        "detail": "file holds no number",
+        "seconds": 8.0,
+        "steps": 4
+      },
+      {
+        "id": "M2",
+        "command": "create a task called integration probe then list the tasks to confirm it exists",
+        "passed": false,
+        "detail": "task was never created",
+        "seconds": 3.8,
+        "steps": 2
+      },
+      {
+        "id": "M4",
+        "command": "add nadia to the team and then show me the team list",
+        "passed": true,
+        "detail": "",
+        "seconds": 5.4,
+        "steps": 3
+      },
+      {
+        "id": "M5",
+        "command": "create a file called chain_a.txt with content step one, then search for files named chain_a to confirm it exists",
+        "passed": false,
+        "detail": "chain_a.txt was never created",
+        "seconds": 5.6,
+        "steps": 2
+      },
+      {
+        "id": "M8",
+        "command": "create a task called followup call and then mark it as done",
+        "passed": false,
+        "detail": "created but still 'pending'",
+        "seconds": 5.9,
+        "steps": 2
+      },
+      {
+        "id": "M9",
+        "command": "create a folder called probe_dir and then list the files to confirm it is there",
+        "passed": false,
+        "detail": "probe_dir was never created",
+        "seconds": 5.6,
+        "steps": 3
+      },
+      {
+        "id": "M10",
+        "command": "add two team members, first omar then lena, and list the team afterwards",
+        "passed": true,
+        "detail": "",
+        "seconds": 6.9,
+        "steps": 4
+      },
+      {
+        "id": "M6",
+        "command": "how many tasks do I have and does that seem like a lot",
+        "passed": true,
+        "detail": "",
+        "seconds": 3.5,
+        "steps": 2
+      },
+      {
+        "id": "M11",
+        "command": "check my system status and tell me whether memory looks healthy",
+        "passed": false,
+        "detail": "no measurement taken",
+        "seconds": 6.1,
+        "steps": 2
+      },
+      {
+        "id": "M12",
+        "command": "look at my drives and tell me which one has the most free space",
+        "passed": false,
+        "detail": "no free-space figures",
+        "seconds": 8.6,
+        "steps": 3
+      },
+      {
+        "id": "M13",
+        "command": "search my files for anything called chain_a and tell me if you found it",
+        "passed": true,
+        "detail": "",
+        "seconds": 3.9,
+        "steps": 2
+      },
+      {
+        "id": "M14",
+        "command": "take a screenshot and then tell me it was saved",
+        "passed": false,
+        "detail": "no screenshot step",
+        "seconds": 240.1,
+        "steps": 1
+      },
+      {
+        "id": "M15",
+        "command": "find out how many team members there are and write it into a document called team_size",
+        "passed": true,
+        "detail": "",
+        "seconds": 25.5,
+        "steps": 4
+      },
+      {
+        "id": "M16",
+        "command": "make a spreadsheet of my tasks and tell me how many rows it has",
+        "passed": false,
+        "detail": "produced it but never reported the row count",
+        "seconds": 5.0,
+        "steps": 2
+      },
+      {
+        "id": "M17",
+        "command": "open the file definitely_not_here_9x7.txt and if that fails create it instead",
+        "passed": false,
+        "detail": "did not fall back to creating the file",
+        "seconds": 10.7,
+        "steps": 4
+      },
+      {
+        "id": "M18",
+        "command": "mark the task called no_such_task_here as done and tell me if it was not found",
+        "passed": true,
+        "detail": "",
+        "seconds": 6.8,
+        "steps": 3
+      }
+    ]
+  },
+  "delta": 0.055
+}

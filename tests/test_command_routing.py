@@ -117,3 +117,54 @@ def test_multi_step_requests_still_decompose(controller):
         "research quantum computing and write me a report"
     )
     assert intent is None, "a multi-step request was collapsed into one action"
+
+
+# ---------------------------------------------------------------------------
+# Reported live: "instead of searching in the system it is searching files on
+# google". The guard only recognised the literal words file/folder/document,
+# so naming the MACHINE sent the user to the web to find their own files.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("phrase", [
+    "search my computer for photos",
+    "search my laptop for invoices",
+    "look on my drive for backups",
+    "where is my resume file",
+    "locate the file called contract",
+    "do i have a file called taxes",
+    "find any file with budget in the name",
+])
+def test_local_file_searches_never_go_to_the_web(controller, phrase):
+    intent = controller._parse_direct_command(phrase)
+    assert intent is not None, f"{phrase!r} was not recognised at all"
+    assert intent["type"] == "search_files", (
+        f"{phrase!r} routed to {intent['type']} - a web search for the user's own files"
+    )
+
+
+@pytest.mark.parametrize("phrase", [
+    "search the web for python tutorials",
+    "google rust lifetimes",
+    "search youtube for jazz",
+    "look up the weather online",
+    "search amazon for headphones",
+])
+def test_genuine_web_searches_still_go_to_the_web(controller, phrase):
+    """Widening the filesystem branch must not swallow real web searches."""
+    intent = controller._parse_direct_command(phrase)
+    assert not (intent and intent.get("type") == "search_files"), (
+        f"{phrase!r} was captured as a filesystem search"
+    )
+
+
+@pytest.mark.parametrize("phrase,expected", [
+    ("search for files named report", "report"),
+    ("search my computer for photos", "photos"),
+    ("locate the file called contract", "contract"),
+    ("find files called invoice", "invoice"),
+    ("do i have a file called taxes", "taxes"),
+])
+def test_the_search_term_excludes_the_scaffolding(controller, phrase, expected):
+    """"files named report" as a query matches nothing on disk."""
+    intent = controller._parse_direct_command(phrase)
+    assert intent["query"] == expected

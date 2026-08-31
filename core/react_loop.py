@@ -175,29 +175,81 @@ class ReactLoop:
         return "\n".join(lines)
 
     def _resolve_action(self, action: str, goal: str) -> str:
-        """Map a tool name onto one of its actions, if that is what was given."""
+        """Map a tool name onto one of its actions, if that is what was given.
+
+        Two shapes need refining, not just one. Besides "system_ops", the
+        registry also accepts bare aliases for a whole tool - "system",
+        "file", "vision" - which RESOLVE successfully and then run something
+        generic. The model picked those and got results with no figures in
+        them, so goals like "which drive has the most free space" failed
+        while every step reported success.
+        """
+        lowered = action.lower()
+        manifest = self.controller.get_tool_manifest()
+
+        # A bare alias of a tool name ("system" for "system_ops") is a
+        # category, not an instruction; refine it against the goal.
+        alias_of = None
+        for tool in manifest:
+            name = str(tool.get("name", "")).lower()
+            if name == lowered or name == f"{lowered}_ops":
+                alias_of = tool
+                break
+        if alias_of is not None:
+            refined = self._best_action_for(alias_of, goal)
+            if refined:
+                return refined
+
         registry = getattr(self.controller, "tool_registry", None)
         if registry and registry.resolve(action):
-            return action                       # already a valid action
+            return action                       # already a specific action
 
-        for tool in self.controller.get_tool_manifest():
+        for tool in manifest:
             if str(tool.get("name", "")).lower() != action.lower():
                 continue
-            usable = [a for a in tool.get("actions", [])
-                      if a not in self.EXCLUDED_ACTIONS]
-            if not usable:
-                return action
-            # Prefer an action whose name appears in the goal, so
-            # "how much disk space" picks disk_drives over status.
-            lowered = goal.lower()
-            for candidate in usable:
-                if candidate.replace("_", " ") in lowered:
-                    return candidate
-            for candidate in usable:
-                if any(part in lowered for part in candidate.split("_") if len(part) > 3):
-                    return candidate
-            return usable[0]
+            return self._best_action_for(tool, goal) or action
         return action
+
+    # Words in a goal that point at a particular action, where the action's
+    # own name would not match. "free space" never contains "drives".
+    _GOAL_HINTS = {
+        "drives": ("disk", "drive", "space", "storage", "free", "partition"),
+        "status": ("status", "health", "memory", "ram", "cpu", "usage"),
+        "process": ("process", "running", "hogging", "eating"),
+        "network": ("network", "wifi", "internet", "connection"),
+        "search_files": ("search", "find", "locate", "look for"),
+        "list_files": ("list", "what files", "show me my files"),
+        "create_file": ("create a file", "make a file", "write a file", "save it to"),
+        "organize": ("organize", "organise", "tidy", "clean up", "sort"),
+        "screenshot": ("screenshot", "capture", "snap"),
+        "extract_text": ("read", "text on", "ocr"),
+        "list_tasks": ("list task", "my tasks", "how many task"),
+        "create_task": ("create a task", "add a task", "new task"),
+        "list_team": ("team list", "show me the team", "list the team"),
+        "add_team_member": ("add", "onboard", "register"),
+    }
+
+    def _best_action_for(self, tool: Dict[str, Any], goal: str) -> Optional[str]:
+        """Pick the action within a tool that best matches the goal."""
+        usable = [a for a in tool.get("actions", [])
+                  if a not in self.EXCLUDED_ACTIONS]
+        if not usable:
+            return None
+        lowered = goal.lower()
+
+        # Strongest signal: a phrase the goal uses for this exact action.
+        for candidate in usable:
+            for hint in self._GOAL_HINTS.get(candidate, ()):
+                if hint in lowered:
+                    return candidate
+        # Then the action name itself appearing in the goal.
+        for candidate in usable:
+            if candidate.replace("_", " ") in lowered:
+                return candidate
+        for candidate in usable:
+            if any(part in lowered for part in candidate.split("_") if len(part) > 3):
+                return candidate
+        return usable[0]
 
     def _build_prompt(self, goal: str, steps: List[Step]) -> str:
         history = ""

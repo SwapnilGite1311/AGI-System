@@ -1696,23 +1696,79 @@ class AutonomousSystemController:
                 "domain": (tenant.group("domain") or "").strip() or None,
             }
 
-        # --- file search: "search FOR FILES" is the filesystem, not the web ---
-        if re.search(r"\b(?:search|find|look)\b", normalized) and re.search(
-            r"\bfiles?\b|\bfolders?\b|\bdocuments?\b", normalized
-        ):
+        # --- file search: this is the filesystem, not the web -------------
+        # "search my computer for photos" was answered with a Google search.
+        # The old guard only recognised the literal words file/folder/
+        # document, so naming the MACHINE instead of the file type sent the
+        # user to the web to look for their own files. "locate", "where is"
+        # and "do i have" were not recognised as searching at all.
+        _search_verb = re.search(
+            r"\b(?:search|find|look|locate|where\s+is|where\s+are|do\s+i\s+have)\b",
+            normalized,
+        )
+        _local_noun = re.search(
+            r"\bfiles?\b|\bfolders?\b|\bdocuments?\b|\bcomputer\b|\bmachine\b"
+            r"|\bpc\b|\blaptop\b|\bdrive\b|\bdisk\b|\bsystem\b|\bdirectory\b"
+            r"|\bdesktop\b|\bdownloads\b",
+            normalized,
+        )
+        if _search_verb and _local_noun:
             # The older branch below parses "<query> in <path>" and splits
             # the location off correctly; only take searches that name no
             # location, which it could not handle at all.
             if re.search(r"\b(?:in|inside|under|within)\b", normalized):
                 return None
             if not re.search(r"\b(?:on|in)\s+(?:the\s+)?(?:web|internet|google|bing|amazon|youtube)\b", normalized):
-                query = re.search(
-                    r"\b(?:named|called|matching|containing)\s+[\"']?(?P<q>[^\"']+?)[\"']?\s*$",
+                # Prefer an explicit introducer, which brackets the term
+                # precisely; "for"/"with" are last resorts because they also
+                # appear in scaffolding ("search FOR files named report"
+                # would otherwise yield "files named report").
+                cleaned = ""
+                explicit = re.search(
+                    r"\b(?:named|called|titled|matching|containing)\s+"
+                    r"[\"']?(?P<q>[^\"']+?)[\"']?\s*$",
                     command, re.IGNORECASE,
                 )
+                if explicit:
+                    cleaned = explicit.group("q")
+                else:
+                    loose = re.search(
+                        r"\b(?:for|with)\s+[\"']?(?P<q>[^\"']+?)[\"']?\s*$",
+                        command, re.IGNORECASE,
+                    )
+                    if loose:
+                        cleaned = loose.group("q")
+
+                if cleaned:
+                    # Strip the words that describe WHERE or WHAT KIND, so the
+                    # query is the term the user actually wants matched.
+                    cleaned = re.sub(
+                        r"^(?:any\s+|a\s+|the\s+)?"
+                        r"(?:files?|folders?|documents?)\s+"
+                        r"(?:named|called|titled|with|matching)?\s*",
+                        "", cleaned, flags=re.IGNORECASE,
+                    )
+                    cleaned = re.sub(
+                        r"\s+(?:in|with)\s+(?:the\s+)?name\s*$", "",
+                        cleaned, flags=re.IGNORECASE,
+                    )
+                    # Drop any leading scaffolding word by word. A regex
+                    # handles one fixed shape; real phrasings stack them
+                    # ("any file with budget"), and searching filenames for
+                    # that whole phrase matches nothing.
+                    scaffold = {
+                        "any", "a", "an", "the", "file", "files", "folder",
+                        "folders", "document", "documents", "with", "named",
+                        "called", "titled", "my", "matching", "containing",
+                        "for", "some",
+                    }
+                    words = cleaned.split()
+                    while words and words[0].lower().strip(".,") in scaffold:
+                        words.pop(0)
+                    cleaned = " ".join(words).strip(" .,'\"")
                 return {
                     "type": "search_files",
-                    "query": (query.group("q").strip() if query else ""),
+                    "query": cleaned,
                     "path": self._extract_known_path(command),
                     "search_content": "content" in normalized or "inside" in normalized,
                 }
