@@ -9,6 +9,7 @@ import json
 import os
 import re
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -1626,6 +1627,70 @@ class AutonomousSystemController:
         matched before the catch-all. Returns None for anything that is not
         an unambiguous structured request, so every other tier is untouched.
         """
+        # --- open a FILE, which is not the same as opening an app ---------
+        # "just open my_tasks.xlsx from documents folder" fell through to
+        # the model, and "open my_tasks.xlsx" was treated as an application
+        # name. The session shows this asked four different ways and failing
+        # every time: "why failed it is such a simple task can't you just
+        # open the spreadsheet?"
+        open_file = re.search(
+            r"^(?:just\s+|please\s+|can\s+you\s+)?open\s+(?:the\s+|my\s+)?"
+            r"(?:file\s+|spreadsheet\s+|document\s+|sheet\s+)?"
+            r"[\"']?(?P<name>[\w .()-]+\.[A-Za-z0-9]{1,5})[\"']?"
+            r"(?:\s+(?:from|in)\s+(?:the\s+|my\s+)?(?P<where>[\w .\\/-]+?)(?:\s+folder)?)?\s*$",
+            command, re.IGNORECASE,
+        )
+        # A bare filename on its own line is also a request to open it.
+        if not open_file:
+            open_file = re.match(
+                r"^[\"']?(?P<name>[\w.()-]+\.[A-Za-z0-9]{1,5})[\"']?\s*$",
+                command.strip(),
+            )
+        if open_file:
+            return {
+                "type": "open_file",
+                "filename": open_file.group("name").strip(),
+                "where": (open_file.groupdict().get("where") or "").strip() or None,
+            }
+
+        # --- delete a named FILE (not a task, not an app) -----------------
+        delete_file = re.search(
+            r"\bdelete\s+(?:the\s+|my\s+)?"
+            r"(?:file\s+|spreadsheet\s+|document\s+)?"
+            r"[\"']?(?P<name>[\w .()-]+\.[A-Za-z0-9]{1,5})[\"']?"
+            r"(?:\s+(?:from|in)\s+(?:the\s+|my\s+)?(?P<where>[\w .\\/-]+?)(?:\s+folder)?)?\s*$",
+            command, re.IGNORECASE,
+        )
+        if delete_file:
+            return {
+                "type": "delete_named_file",
+                "filename": delete_file.group("name").strip(),
+                "where": (delete_file.groupdict().get("where") or "").strip() or None,
+            }
+
+        # --- questions about ITSELF ---------------------------------------
+        # Asked repeatedly in the session and answered by a 3B model that
+        # has no idea which model it is or where it lives, so it invented
+        # answers. These facts are known locally; read them out instead.
+        if re.search(r"\b(?:which|what)\b.*\bmodels?\b.*\b(?:you|using|running)\b",
+                     normalized) or re.search(
+                     r"\bwhat\s+model\b|\bwhich\s+model\b", normalized):
+            return {"type": "self_report", "topic": "model"}
+
+        if re.search(r"\b(?:which|what)\s+(?:folder|directory|path)\b.*\byou\b",
+                     normalized) or re.search(
+                     r"\bwhere\s+(?:are|is)\s+(?:you|your\s+files)\b", normalized):
+            return {"type": "self_report", "topic": "location"}
+
+        if re.search(
+            r"\bwhat\s+(?:can|could)\s+you\s+do\b"
+            r"|\btell\s+me\s+what\s+you\s+can\s+do\b"
+            r"|\byour\s+capabilit|\bwhat\s+are\s+you\s+able\s+to\b"
+            r"|\blist\s+your\s+(?:features|abilities|capabilities)\b",
+            normalized,
+        ):
+            return {"type": "self_report", "topic": "capabilities"}
+
         # --- add a person to the team -------------------------------------
         # "add priya to the team" reached the conversation tier, which
         # replied "Sure thing, Priya added." and added nobody. Claiming an
@@ -1633,14 +1698,19 @@ class AutonomousSystemController:
         # has, so this phrasing gets a real branch.
         member = re.search(
             r"\b(?:add|register|onboard)\s+(?P<name>[A-Za-z][A-Za-z .'-]{1,40}?)"
-            r"\s+(?:to|into)\s+(?:the\s+)?(?:team|staff|roster)\s*$",
+            r"\s+(?:to|into)\s+(?:the\s+)?(?:team|staff|roster)"
+            # "...with email x@y.com" and "...as a developer" are common and
+            # used to push the whole command out to the model.
+            r"(?:\s+(?:with|and)\s+(?:the\s+)?e-?mail\s+(?P<email>[\w.+-]+@[\w-]+\.[\w.-]+))?"
+            r"(?:\s+as\s+(?:a\s+|an\s+)?(?P<role>[A-Za-z ]{2,30}?))?\s*$",
             command, re.IGNORECASE,
         )
         if member:
             return {
                 "type": "add_team_member",
                 "name": member.group("name").strip(),
-                "role": "member",
+                "email": (member.groupdict().get("email") or "").strip() or None,
+                "role": (member.groupdict().get("role") or "").strip() or "member",
             }
 
         # --- complete a task by NAME, not by uuid --------------------------
@@ -1803,6 +1873,30 @@ class AutonomousSystemController:
 
         return None
 
+    # Whisper writes non-speech events in brackets. Nothing a user types
+    # deliberately looks like this.
+    _NOISE_RE = re.compile(
+        r"^[\s]*(?:[\[(][^\])]*[\])][\s]*)+$"
+    )
+    _NOISE_WORDS = (
+        "typewriter", "keyboard", "clicking", "silence", "music", "noise",
+        "blank_audio", "blank audio", "inaudible", "background", "static",
+        "coughing", "laughter", "applause", "footsteps", "breathing",
+    )
+
+    @classmethod
+    def _is_transcription_noise(cls, command: str) -> bool:
+        """Is this a whisper annotation rather than something the user said?"""
+        text = (command or "").strip()
+        if not text:
+            return False
+        if not cls._NOISE_RE.match(text):
+            return False
+        lowered = text.lower()
+        # Only treat it as noise if it also NAMES a non-speech sound; a user
+        # could legitimately type "(status)" and mean it.
+        return any(word in lowered for word in cls._NOISE_WORDS)
+
     def _parse_email_command(self, command: str, normalized: str) -> Optional[Dict[str, Any]]:
         """Deterministically parse "send an email to X regarding Y".
 
@@ -1889,6 +1983,13 @@ class AutonomousSystemController:
 
         normalized = self._normalize_command(command)
         normalized = re.sub(r"^(?:please|can you|could you|would you)\s+", "", normalized)
+
+        # Whisper brackets every non-speech sound it hears, and those
+        # annotations were run as commands - the session log contains
+        # "[Typewriter sounds]" and "(keyboard clicking) (keyboard clicking)"
+        # being processed as instructions.
+        if self._is_transcription_noise(command):
+            return {"type": "transcription_noise", "heard": command.strip()}
 
         email_intent = self._parse_email_command(command, normalized)
         if email_intent:
@@ -3574,6 +3675,38 @@ class AutonomousSystemController:
             else:
                 step_result = {"success": True, **vision_result}
 
+        elif intent_type == "transcription_noise":
+            step_result = {
+                "success": False,
+                "error": (
+                    f"I heard {intent.get('heard')!r}, which is background noise "
+                    "rather than speech, so I have not acted on it."
+                ),
+            }
+
+        elif intent_type == "open_file":
+            step_result = self._open_named_file(
+                intent.get("filename"), intent.get("where")
+            )
+
+        elif intent_type == "delete_named_file":
+            target = self._locate_named_file(
+                intent.get("filename"), intent.get("where")
+            )
+            if not target:
+                step_result = {
+                    "success": False,
+                    "error": (f"I could not find {intent.get('filename')!r}. "
+                              "Tell me the folder and I will look there."),
+                }
+            else:
+                step_result = self.agents["file"].delete_file(str(target))
+                if step_result.get("success"):
+                    step_result["message"] = f"Deleted {target}"
+
+        elif intent_type == "self_report":
+            step_result = self._describe_self(intent.get("topic"))
+
         elif intent_type == "extract_text":
             # OCR the screen. Without this branch the intent fell through to
             # the web tool, which received no query and failed with
@@ -4127,6 +4260,133 @@ class AutonomousSystemController:
             handler=lambda action, params, context: self._execute_math_action(action, params, context),
         ))
         return registry
+
+    # Where a user means when they say "documents folder", "desktop", etc.
+    _NAMED_PLACES = {
+        "documents": lambda: Path.home() / "Documents",
+        "document": lambda: Path.home() / "Documents",
+        "desktop": lambda: Path.home() / "Desktop",
+        "downloads": lambda: Path.home() / "Downloads",
+        "download": lambda: Path.home() / "Downloads",
+        "pictures": lambda: Path.home() / "Pictures",
+        "home": lambda: Path.home(),
+    }
+
+    def _locate_named_file(self, filename: str, where: Optional[str] = None) -> Optional[Path]:
+        """Find a file the user named, searching the places they mean.
+
+        "just open my_tasks.xlsx from documents folder" used to reach the
+        model, which turned it into a web search. The file was sitting in
+        the user's Documents folder the whole time.
+        """
+        if not filename:
+            return None
+        name = str(filename).strip().strip("\"'")
+
+        roots = []
+        if where:
+            key = str(where).strip().lower().replace(" folder", "")
+            if key in self._NAMED_PLACES:
+                roots.append(self._NAMED_PLACES[key]())
+            else:
+                candidate = Path(where).expanduser()
+                if candidate.is_dir():
+                    roots.append(candidate)
+        roots += [
+            Path.home() / "Documents", Path.home() / "Desktop",
+            Path.home() / "Downloads", Path.cwd(),
+            Path(DEFAULT_CONFIG_PATH).parent.parent,
+        ]
+
+        direct = Path(name).expanduser()
+        if direct.is_file():
+            return direct
+
+        for root in roots:
+            try:
+                if not root or not root.is_dir():
+                    continue
+                exact = root / name
+                if exact.is_file():
+                    return exact
+                for hit in root.glob(f"**/{name}"):
+                    if hit.is_file():
+                        return hit
+            except Exception:
+                continue
+        return None
+
+    def _open_named_file(self, filename: str, where: Optional[str] = None) -> Dict[str, Any]:
+        """Open a file with whatever application the OS associates with it."""
+        target = self._locate_named_file(filename, where)
+        if not target:
+            return {
+                "success": False,
+                "error": (f"I could not find {filename!r}. Tell me which folder "
+                          "it is in and I will open it."),
+            }
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(target))          # noqa: S606 - user asked
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+            return {
+                "success": True,
+                "path": str(target),
+                "message": f"Opened {target.name}",
+            }
+        except Exception as exc:
+            return {"success": False, "error": f"Could not open {target.name}: {exc}"}
+
+    def _describe_self(self, topic: Optional[str]) -> Dict[str, Any]:
+        """Answer questions about this system from FACT, not from the model.
+
+        Asked several times in one session - which model, which folder, what
+        can you do - and answered by a 3B model with no way to know, so it
+        invented answers. All of this is knowable locally.
+        """
+        config = self.config or {}
+        council = config.get("llm_council", {})
+        root = Path(DEFAULT_CONFIG_PATH).parent.parent
+
+        if topic == "model":
+            models = {
+                role: (spec or {}).get("model")
+                for role, spec in council.items()
+                if isinstance(spec, dict) and spec.get("model")
+            }
+            return {
+                "success": True,
+                "message": (
+                    "I run entirely on local models through Ollama - nothing is "
+                    "sent to any external service."
+                ),
+                "models_by_role": models,
+                "conversation_model": config.get("conversation", {}).get("model"),
+                "embedding_model": config.get("embeddings", {}).get("model"),
+            }
+
+        if topic == "location":
+            return {
+                "success": True,
+                "message": f"My code and data live in {root}",
+                "project_root": str(root),
+                "data_directory": str(root / config.get("paths", {}).get("data", "data")),
+                "entry_point": str(root / "main.py"),
+            }
+
+        # capabilities
+        tools = []
+        for tool in self.get_tool_manifest():
+            tools.append({
+                "tool": tool.get("name"),
+                "does": str(tool.get("description", ""))[:110],
+            })
+        return {
+            "success": True,
+            "message": "Everything below runs locally on this machine.",
+            "capabilities": tools,
+        }
 
     def _execute_document_action(self, action_type: str, params: Dict[str, Any], context: str) -> Dict[str, Any]:
         """Execute document/spreadsheet-generation actions routed from plans."""
