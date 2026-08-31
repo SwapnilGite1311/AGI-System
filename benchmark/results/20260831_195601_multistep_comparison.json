@@ -1,0 +1,119 @@
+{
+  "run_at": "2026-08-31T19:56:01",
+  "multistep_version": "1.0",
+  "tiers": {
+    "mode": "tiers",
+    "passed": 2,
+    "total": 6,
+    "rate": 0.333,
+    "median_seconds": 25.0,
+    "rows": [
+      {
+        "id": "M1",
+        "command": "check how much disk space is free and save it to a file called disk_report.txt",
+        "passed": true,
+        "detail": "",
+        "seconds": 0.8,
+        "steps": 1
+      },
+      {
+        "id": "M2",
+        "command": "create a task called integration probe then list the tasks to confirm it exists",
+        "passed": false,
+        "detail": "created it but never read it back, so it was not confirmed",
+        "seconds": 0.8,
+        "steps": 2
+      },
+      {
+        "id": "M3",
+        "command": "find out what my CPU usage is and write a short summary to cpu_summary.txt",
+        "passed": false,
+        "detail": "no cpu_summary.txt produced",
+        "seconds": 25.0,
+        "steps": 1
+      },
+      {
+        "id": "M4",
+        "command": "add nadia to the team and then show me the team list",
+        "passed": false,
+        "detail": "added but never listed back",
+        "seconds": 0.6,
+        "steps": 2
+      },
+      {
+        "id": "M5",
+        "command": "create a file called chain_a.txt with content step one, then search for files named chain_a to confirm it exists",
+        "passed": false,
+        "detail": "chain_a.txt was never created",
+        "seconds": 40.0,
+        "steps": 2
+      },
+      {
+        "id": "M6",
+        "command": "how many tasks do I have and does that seem like a lot",
+        "passed": true,
+        "detail": "",
+        "seconds": 30.1,
+        "steps": 1
+      }
+    ]
+  },
+  "react": {
+    "mode": "react",
+    "passed": 3,
+    "total": 6,
+    "rate": 0.5,
+    "median_seconds": 6.4,
+    "rows": [
+      {
+        "id": "M1",
+        "command": "check how much disk space is free and save it to a file called disk_report.txt",
+        "passed": true,
+        "detail": "",
+        "seconds": 23.8,
+        "steps": 3
+      },
+      {
+        "id": "M2",
+        "command": "create a task called integration probe then list the tasks to confirm it exists",
+        "passed": false,
+        "detail": "task was never created",
+        "seconds": 6.4,
+        "steps": 4
+      },
+      {
+        "id": "M3",
+        "command": "find out what my CPU usage is and write a short summary to cpu_summary.txt",
+        "passed": false,
+        "detail": "no cpu_summary.txt produced",
+        "seconds": 9.2,
+        "steps": 1
+      },
+      {
+        "id": "M4",
+        "command": "add nadia to the team and then show me the team list",
+        "passed": true,
+        "detail": "",
+        "seconds": 5.7,
+        "steps": 3
+      },
+      {
+        "id": "M5",
+        "command": "create a file called chain_a.txt with content step one, then search for files named chain_a to confirm it exists",
+        "passed": false,
+        "detail": "chain_a.txt was never created",
+        "seconds": 6.0,
+        "steps": 2
+      },
+      {
+        "id": "M6",
+        "command": "how many tasks do I have and does that seem like a lot",
+        "passed": true,
+        "detail": "",
+        "seconds": 3.8,
+        "steps": 2
+      }
+    ]
+  },
+  "delta": 0.167
+}
