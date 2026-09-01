@@ -285,6 +285,10 @@ class WebAgent:
 
         target_url = self._normalize_url(url)
         browser = browser_name or self.default_browser
+        # Set when Playwright could not load the page. Everything below only
+        # LAUNCHES a browser, which is not the same as having the document
+        # under our control - callers that need the DOM have to be told.
+        driver_error: Optional[str] = None
 
         # Prefer a real browser-driver when available for reliable DOM control
         if self.browser_driver:
@@ -296,15 +300,19 @@ class WebAgent:
                         "browser": "playwright",
                         "url": target_url,
                         "launch_mode": "driver",
+                        "dom_available": True,
                         "message": f"Opened {target_url} via Playwright",
                     }
                     self.last_url = target_url
                     self.last_browser = browser
+                    self._last_nav_dom_available = True
                     return navigation_result
                 else:
                     logger.warning("Playwright navigation failed: {}", nav.get("error"))
+                    driver_error = nav.get("error")
             except Exception as exc:
                 logger.warning("Playwright goto exception: {}", str(exc))
+                driver_error = str(exc)
 
         result = self.system_agent.open_application(browser, args=[target_url])
         launch_mode = "application"
@@ -336,8 +344,19 @@ class WebAgent:
             "browser": browser,
             "url": target_url,
             "launch_mode": launch_mode,
+            # A launched browser is not a page we can read or type into.
+            # Callers that need the document must know the difference.
+            "dom_available": False,
             "message": f"Opened {target_url} in {browser}",
         }
+
+        if driver_error:
+            navigation_result["driver_error"] = driver_error
+            navigation_result["warning"] = (
+                f"Opened {target_url} in {browser}, but could not take control of "
+                f"the page ({driver_error}). Anything that needs to read or fill "
+                "the page will not work here."
+            )
 
         if result.get("pid") is not None:
             navigation_result["pid"] = result["pid"]
@@ -346,6 +365,7 @@ class WebAgent:
 
         self.last_url = target_url
         self.last_browser = browser
+        self._last_nav_dom_available = False
 
         return navigation_result
 
@@ -647,6 +667,24 @@ class WebAgent:
         Fill a form using OCR analysis, stored patterns, and keyboard navigation.
         The current workflow assumes the browser is open and focus is on the page.
         """
+
+        # If the last navigation only LAUNCHED a browser, there is no page
+        # under our control. The keyboard fallback would still "succeed" by
+        # typing into whatever window happens to be focused and counting the
+        # keystrokes as filled fields - which is how filling a form on a page
+        # that failed to load reported four fields filled.
+        if getattr(self, "_last_nav_dom_available", None) is False:
+            return {
+                "success": False,
+                "requires_user_attention": True,
+                "error": (
+                    "The page is not under my control - the last navigation only "
+                    "opened a browser window. I will not type into whatever "
+                    "happens to be focused. Reopen the page and try again."
+                ),
+                "fields_filled": [],
+                "fill_method": "refused_no_dom",
+            }
 
         analysis = await self.analyze_form(form_name=form_name)
         field_sequence = self._build_field_sequence(field_values, analysis if analysis.get("success") else {})
@@ -1047,7 +1085,14 @@ class WebAgent:
         cleaned = url.strip()
         if not cleaned:
             return self.search_engine_url.format(query="")
-        if cleaned.startswith(("http://", "https://")):
+
+        # Any real scheme is left alone. Checking only http/https turned
+        # "file:///C:/..." into "https://file///C:/..." - a hostname called
+        # "file" that will never resolve.
+        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", cleaned):
+            return cleaned
+        # Schemes without a "//" authority: mailto:, about:, data:, tel:
+        if re.match(r"^(?:mailto|about|data|tel|chrome|edge|view-source):", cleaned):
             return cleaned
         return f"https://{cleaned}"
 
