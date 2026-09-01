@@ -111,7 +111,20 @@ class BrowserDriver:
         try:
             resp = await self.page.goto(url, timeout=timeout)
             status = resp.status if resp else None
-            return {"success": True, "status": status, "url": url}
+
+            # The browser renders a 404 as happily as a real page. Callers
+            # that go on to look for content deserve to know the difference
+            # between "the page said no" and "the content is missing".
+            if status is not None and status >= 400:
+                return {
+                    "success": False,
+                    "status": status,
+                    "url": url,
+                    "error": f"{url} returned HTTP {status}",
+                }
+
+            return {"success": True, "status": status, "url": url,
+                    "final_url": self.page.url}
         except Exception as exc:
             return {"success": False, "error": str(exc), "url": url}
 

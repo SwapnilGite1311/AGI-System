@@ -550,10 +550,22 @@ class AdvancedNeuralNetwork:
                 model_path = self.models_path / f"{model_id}.joblib"
                 joblib.dump(model_data["model"], model_path)
             
+            # model_path is bound on both branches (.pt or .joblib). A model
+            # file that cannot be read back is a training run silently thrown
+            # away - nobody notices until the next load fails.
+            if not model_path.exists() or model_path.stat().st_size == 0:
+                return {
+                    "success": False,
+                    "model_id": model_id,
+                    "error": (f"Model reported saved but {model_path} is "
+                              "missing or empty"),
+                }
+
             return {
                 "success": True,
                 "model_id": model_id,
                 "saved_path": str(model_path),
+                "verified": True,
                 "message": f"Model {model_id} saved successfully"
             }
             

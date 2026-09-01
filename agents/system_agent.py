@@ -241,24 +241,72 @@ class SystemAgent:
             if pid:
                 if pid == my_pid:
                     return {"success": False, "error": "Refusing to terminate the VEGA process itself."}
-                proc = psutil.Process(pid)
+                try:
+                    proc = psutil.Process(pid)
+                except psutil.NoSuchProcess:
+                    # Not an error worth a stack-trace message: the caller
+                    # asked for something that is not running.
+                    return {
+                        "success": False,
+                        "pid": pid,
+                        "error": f"No process with PID {pid} is running.",
+                    }
                 proc.terminate()
+                # terminate() is a request, not a guarantee. Give it a
+                # moment and confirm, rather than reporting a process
+                # closed while it is still running.
+                try:
+                    proc.wait(timeout=3)
+                except psutil.TimeoutExpired:
+                    return {
+                        "success": False,
+                        "pid": pid,
+                        "error": (f"Asked PID {pid} to close, but it is still "
+                                  "running after 3 seconds."),
+                        "still_running": True,
+                    }
                 logger.info("Killed process PID: {}", pid)
-                return {"success": True, "pid": pid}
+                return {"success": True, "pid": pid, "verified": True}
             if process_name:
                 target = process_name.lower().strip()
                 target_stem = target[:-4] if target.endswith(".exe") else target
-                killed_count = 0
+                targeted = []
                 for proc in psutil.process_iter(["pid", "name"]):
                     if proc.info.get("pid") == my_pid:
                         continue
                     name = (proc.info.get("name") or "").lower()
                     stem = name[:-4] if name.endswith(".exe") else name
                     if stem == target_stem:
-                        proc.terminate()
-                        killed_count += 1
-                logger.info("Killed {} instances of {}", killed_count, process_name)
-                return {"success": True, "killed": killed_count, "process": process_name}
+                        try:
+                            proc.terminate()
+                            targeted.append(proc)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+
+                if not targeted:
+                    return {
+                        "success": False,
+                        "killed": 0,
+                        "process": process_name,
+                        "error": f"No running process named {process_name!r}.",
+                    }
+
+                # Count what actually went away, not what was asked to.
+                gone, survived = psutil.wait_procs(targeted, timeout=3)
+                if survived:
+                    return {
+                        "success": False,
+                        "killed": len(gone),
+                        "still_running": [p.pid for p in survived],
+                        "process": process_name,
+                        "error": (f"Closed {len(gone)} of {len(targeted)} "
+                                  f"{process_name} processes; "
+                                  f"{len(survived)} ignored the request."),
+                    }
+
+                logger.info("Killed {} instances of {}", len(gone), process_name)
+                return {"success": True, "killed": len(gone),
+                        "process": process_name, "verified": True}
             return {"success": False, "error": "No process name or PID provided"}
         except Exception as exc:
             logger.error("Kill process failed: {}", str(exc))
@@ -421,9 +469,16 @@ class SystemAgent:
                     return {
                         "success": True,
                         "application": app_name,
-                        "pid": process.pid,
+                        # This is cmd.exe's pid, not the application's -
+                        # "start" hands off and exits. Naming it honestly
+                        # stops callers treating it as the app's process.
+                        "pid": None,
+                        "launcher_pid": process.pid,
                         "path": app_name,
                         "launch_mode": "start_fallback",
+                        "note": ("Handed to the Windows shell; whether the "
+                                 "application stayed open is not observable "
+                                 "from here."),
                     }
                 except Exception as exc:
                     logger.warning("Windows start fallback failed for {}: {}", app_name, str(exc))
@@ -438,8 +493,28 @@ class SystemAgent:
                 cmd.extend(args)
             process = subprocess.Popen(cmd, shell=False)
             self.managed_processes[process.pid] = process
+
+            # Popen returns the instant the process is spawned, so a program
+            # that dies immediately - missing DLL, bad argument, instant
+            # crash - was still reported as opened, with a PID that had
+            # already gone. Give it a moment and check it is still alive.
+            time.sleep(0.4)
+            exit_code = process.poll()
+            if exit_code is not None and exit_code != 0:
+                self.managed_processes.pop(process.pid, None)
+                logger.error("{} exited immediately with code {}", app_name, exit_code)
+                return {
+                    "success": False,
+                    "application": app_name,
+                    "error": (f"{app_name} started and then exited immediately "
+                              f"with code {exit_code}"),
+                    "exit_code": exit_code,
+                    "path": exe,
+                }
+
             logger.success("Opened: {} (PID: {})", app_name, process.pid)
-            return {"success": True, "application": app_name, "pid": process.pid, "path": exe}
+            return {"success": True, "application": app_name, "pid": process.pid,
+                    "path": exe, "still_running": exit_code is None}
         except Exception as exc:
             logger.error("Failed to open {}: {}", app_name, str(exc))
             return {"success": False, "application": app_name, "error": str(exc)}
@@ -505,7 +580,11 @@ class SystemAgent:
             return {"success": False, "error": str(exc)}
 
         if not wait:
-            return {"success": True, "pid": proc.pid, "started": True}
+            # The caller asked not to wait, so "started" means the process
+            # was spawned - not that Ollama is answering yet.
+            return {"success": True, "pid": proc.pid, "started": True,
+                    "verified": False,
+                    "note": "Not health-checked; wait=False was requested."}
 
         start = time.time()
         while time.time() - start < timeout:
@@ -527,7 +606,17 @@ class SystemAgent:
                     cmdline = proc.info.get('cmdline', [])
                     if cmdline and 'server.py' in ' '.join(cmdline):
                         proc.terminate()
-                        return {"success": True, "stopped": True, "pid": proc.pid}
+                        try:
+                            proc.wait(timeout=5)
+                        except psutil.TimeoutExpired:
+                            return {
+                                "success": False,
+                                "pid": proc.pid,
+                                "error": ("Asked the voice server to stop, but "
+                                          "it is still running."),
+                            }
+                        return {"success": True, "stopped": True,
+                                "pid": proc.pid, "verified": True}
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         return {"success": False, "error": "Voice server process not found."}
@@ -583,15 +672,30 @@ class SystemAgent:
 
     def stop_ollama(self) -> Dict[str, Any]:
         """Terminate running Ollama processes."""
-        killed = 0
+        targeted = []
         for proc in psutil.process_iter(["pid", "name"]):
             try:
                 if proc.info.get("name") and "ollama" in proc.info.get("name").lower():
                     proc.terminate()
-                    killed += 1
+                    targeted.append(proc)
             except Exception:
                 continue
-        return {"success": True, "killed": killed}
+
+        if not targeted:
+            return {"success": True, "killed": 0,
+                    "message": "Ollama was not running."}
+
+        # terminate() is a request. Count what actually exited.
+        gone, survived = psutil.wait_procs(targeted, timeout=5)
+        if survived:
+            return {
+                "success": False,
+                "killed": len(gone),
+                "still_running": [proc.pid for proc in survived],
+                "error": (f"Stopped {len(gone)} of {len(targeted)} Ollama "
+                          f"processes; {len(survived)} are still running."),
+            }
+        return {"success": True, "killed": len(gone), "verified": True}
 
     def search_applications(self, query: str = None) -> List[Dict[str, Any]]:
         """Search for installed applications."""
@@ -1040,7 +1144,10 @@ class SystemAgent:
         """Type text into the active application."""
         try:
             pyautogui.write(text, interval=interval)
-            return {"success": True, "text": text}
+            # success means the input was EMITTED. Nothing here can see
+            # whether it reached the field the caller had in mind.
+            return {"success": True, "text": text, "verified": False,
+                    "note": "Keystrokes are emitted to the OS; where they land depends on which window has focus, which is not observable from here."}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -1048,7 +1155,8 @@ class SystemAgent:
         """Press a single key."""
         try:
             pyautogui.press(key)
-            return {"success": True, "key": key}
+            return {"success": True, "key": key, "verified": False,
+                    "note": "Keystrokes are emitted to the OS; where they land depends on which window has focus, which is not observable from here."}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -1056,7 +1164,8 @@ class SystemAgent:
         """Press a keyboard shortcut such as Ctrl+A or Ctrl+L."""
         try:
             pyautogui.hotkey(*keys)
-            return {"success": True, "keys": list(keys)}
+            return {"success": True, "keys": list(keys), "verified": False,
+                    "note": "Keystrokes are emitted to the OS; where they land depends on which window has focus, which is not observable from here."}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -1067,7 +1176,10 @@ class SystemAgent:
                 pyautogui.click(x, y)
             else:
                 pyautogui.click()
-            return {"success": True, "x": x, "y": y}
+            return {"success": True, "x": x, "y": y, "verified": False,
+                    "note": ("The click was sent to those screen coordinates; "
+                             "what was underneath them is not observable "
+                             "from here.")}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 

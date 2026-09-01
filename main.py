@@ -4741,6 +4741,12 @@ class AutonomousSystemController:
             return {
                 "success": True,
                 "path": str(target),
+                # The file exists and the OS accepted the request. Whether
+                # an application actually came up - and whether it could
+                # read the file - is not visible from here, so do not
+                # claim more than the handoff.
+                "verified": False,
+                "note": "Handed to the OS; the file exists and opening was requested.",
                 "message": f"Opened {target.name}",
             }
         except Exception as exc:

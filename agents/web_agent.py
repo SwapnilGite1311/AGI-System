@@ -468,6 +468,10 @@ class WebAgent:
                         "form_name": form_name,
                         "verification": "unknown",
                         "submission_verified": False,
+                        # Same meaning as submission_verified, in the key the
+                        # rest of the codebase uses: the click happened, the
+                        # outcome could not be confirmed.
+                        "verified": False,
                         "page_text": text[:200],
                     }
             except Exception as exc:

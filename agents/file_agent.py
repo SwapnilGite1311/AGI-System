@@ -783,11 +783,26 @@ class FileAgent:
             # Copy entire folder
             shutil.copytree(src, backup_path)
 
+            # A backup nobody counted is not a backup. Compare file counts
+            # so a partial copy is reported rather than celebrated.
+            source_files = sum(1 for _ in src.rglob("*") if _.is_file())
+            backup_files = sum(1 for _ in backup_path.rglob("*") if _.is_file())
+            if backup_files != source_files:
+                return {
+                    "success": False,
+                    "source": str(src),
+                    "backup_path": str(backup_path),
+                    "error": (f"Backup is incomplete: {source_files} files at "
+                              f"the source, {backup_files} in the backup."),
+                }
+
             logger.success("✅ Backup created: {}", backup_path)
             return {
                 "success": True,
                 "source": str(src),
-                "backup_path": str(backup_path)
+                "backup_path": str(backup_path),
+                "files": backup_files,
+                "verified": True,
             }
 
         except Exception as e:

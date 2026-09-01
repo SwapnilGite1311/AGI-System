@@ -1154,8 +1154,22 @@ class BusinessAgent:
             server = smtplib.SMTP(smtp_server, smtp_port)
             server.starttls()
             server.login(email_address, password)
-            server.send_message(msg)
+            # send_message RETURNS the recipients the server refused. That
+            # return value was discarded, so an address the server rejected
+            # outright was still reported as "Email sent successfully".
+            refused = server.send_message(msg)
             server.quit()
+
+            if refused:
+                rejected = ", ".join(sorted(refused))
+                logger.error("SMTP refused recipient(s): {}", rejected)
+                return {
+                    "success": False,
+                    "error": f"The mail server refused: {rejected}",
+                    "refused": {k: str(v) for k, v in refused.items()},
+                    "to": to_email,
+                    "subject": subject,
+                }
             
             # Log the communication
             self.create_communication_log(
@@ -1170,7 +1184,10 @@ class BusinessAgent:
                 "message": f"Email sent successfully to {to_email}",
                 "to": to_email,
                 "subject": subject,
-                "sent_at": datetime.now().isoformat()
+                "sent_at": datetime.now().isoformat(),
+                # The server accepted it for every recipient. That is as far
+                # as SMTP can confirm - delivery is not observable from here.
+                "accepted_by_server": True,
             }
             
         except Exception as e:
