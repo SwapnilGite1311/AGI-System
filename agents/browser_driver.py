@@ -16,10 +16,24 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 class BrowserDriver:
-    def __init__(self, headless: bool = True, browser: str = "chromium", browsers_path: Optional[str] = None):
+    def __init__(
+        self,
+        headless: bool = True,
+        browser: str = "chromium",
+        browsers_path: Optional[str] = None,
+        persistent_profile_dir: Optional[str] = None,
+    ):
         self.headless = headless
         self.browser_name = browser
         self.browsers_path = browsers_path
+        # When set, launches a real Chromium profile directory VEGA owns
+        # (not the user's actual personal Chrome profile - avoids lock
+        # conflicts if their own browser is open, and keeps automated
+        # actions out of their personal history/cookies) instead of an
+        # ephemeral context. The user logs into whatever sites they want
+        # VEGA to act on once, inside that profile; it persists across
+        # restarts since it's real profile-directory state on disk.
+        self.persistent_profile_dir = persistent_profile_dir
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
@@ -39,10 +53,26 @@ class BrowserDriver:
         if not browser_ctor:
             browser_ctor = self._playwright.chromium
 
-        self._browser = await browser_ctor.launch(headless=self.headless)
-        self._context = await self._browser.new_context()
-        self.page = await self._context.new_page()
-        logger.info("Playwright browser started: {} (headless={})", self.browser_name, self.headless)
+        if self.persistent_profile_dir:
+            Path(self.persistent_profile_dir).mkdir(parents=True, exist_ok=True)
+            # launch_persistent_context returns the BrowserContext directly -
+            # there is no separate Browser object in this mode.
+            self._context = await browser_ctor.launch_persistent_context(
+                self.persistent_profile_dir, headless=self.headless,
+            )
+            self._browser = None
+            logger.info(
+                "Playwright persistent profile started: {} (dir={})",
+                self.browser_name, self.persistent_profile_dir,
+            )
+        else:
+            self._browser = await browser_ctor.launch(headless=self.headless)
+            self._context = await self._browser.new_context()
+            logger.info("Playwright browser started: {} (headless={})", self.browser_name, self.headless)
+
+        # A persistent context launches with one blank tab already open in
+        # Chromium - reuse it instead of opening a second blank tab.
+        self.page = self._context.pages[0] if self._context.pages else await self._context.new_page()
 
     def _configure_browsers_path(self):
         """Use a configured/global Playwright browser cache when available."""
@@ -81,9 +111,43 @@ class BrowserDriver:
         try:
             resp = await self.page.goto(url, timeout=timeout)
             status = resp.status if resp else None
-            return {"success": True, "status": status, "url": url}
+
+            # The browser renders a 404 as happily as a real page. Callers
+            # that go on to look for content deserve to know the difference
+            # between "the page said no" and "the content is missing".
+            if status is not None and status >= 400:
+                return {
+                    "success": False,
+                    "status": status,
+                    "url": url,
+                    "error": f"{url} returned HTTP {status}",
+                }
+
+            return {"success": True, "status": status, "url": url,
+                    "final_url": self.page.url}
         except Exception as exc:
             return {"success": False, "error": str(exc), "url": url}
+
+    async def _read_back(self, selector: str) -> Optional[str]:
+        """What the field actually holds now.
+
+        Covers the three shapes a "field" takes: input/textarea (value),
+        select (the selected value), and contenteditable (text content).
+        Returns None when it cannot be read, which is itself a failure to
+        verify rather than a pass.
+        """
+        try:
+            return await self.page.input_value(selector, timeout=2000)
+        except Exception:
+            pass
+        try:
+            return await self.page.eval_on_selector(
+                selector,
+                "el => el.value !== undefined && el.value !== null"
+                " ? el.value : (el.textContent || '')",
+            )
+        except Exception:
+            return None
 
     async def fill_fields(self, field_map: Dict[str, str], submit_selector: Optional[str] = None) -> Dict[str, object]:
         """Fill fields using selector keys in field_map.
@@ -104,7 +168,12 @@ class BrowserDriver:
                     try:
                         # Playwright accepts CSS selectors and 'xpath=..' selectors
                         await self.page.fill(selector, value)
-                        filled.append({"selector": selector, "value": value})
+                        landed = await self._read_back(selector)
+                        if landed != value:
+                            raise RuntimeError(
+                                f"value did not stick (field holds {landed!r})")
+                        filled.append({"selector": selector, "value": value,
+                                       "verified": True})
                         last_exc = None
                         break
                     except Exception as exc:
@@ -112,7 +181,12 @@ class BrowserDriver:
                         try:
                             await self.page.click(selector)
                             await self.page.type(selector, value)
-                            filled.append({"selector": selector, "value": value})
+                            landed = await self._read_back(selector)
+                            if landed != value:
+                                raise RuntimeError(
+                                    f"value did not stick (field holds {landed!r})")
+                            filled.append({"selector": selector, "value": value,
+                                           "verified": True})
                             last_exc = None
                             break
                         except Exception as exc2:
@@ -120,7 +194,16 @@ class BrowserDriver:
                     attempt += 1
 
                 if last_exc:
-                    return {"success": False, "error": f"Failed to fill {selector}: {str(last_exc)}"}
+                    # Report what DID land. A half-filled form is a real
+                    # state the user has to know about - returning only the
+                    # error left them thinking nothing had been typed.
+                    return {
+                        "success": False,
+                        "error": f"Failed to fill {selector}: {str(last_exc)}",
+                        "filled": filled,
+                        "failed_selector": selector,
+                        "partial": bool(filled),
+                    }
 
             if submit_selector:
                 try:
@@ -139,7 +222,15 @@ class BrowserDriver:
                 pass
 
             content = await self.page.content()
-            return {"success": True, "filled": filled, "page_content": content}
+            return {
+                "success": True,
+                "filled": filled,
+                # Every entry in `filled` was read back and matched. Without
+                # this, "filled" meant "fill() did not raise", which is a
+                # much weaker claim than it appears.
+                "verified": all(f.get("verified") for f in filled),
+                "page_content": content,
+            }
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -267,6 +358,46 @@ class BrowserDriver:
                 textNodes.push(walker.currentNode);
             }
 
+            // ---- ARIA first -------------------------------------------
+            // Google Forms (and most modern form builders) put the question
+            // text in a separate element and point at it with
+            // aria-labelledby; the inputs carry no id, name or <label>. The
+            // text-node walk below cannot see that relationship, so a real
+            // Google Form yielded zero selectors.
+            const ariaInputs = Array.from(
+                document.querySelectorAll('input,textarea,select')
+            );
+            function ariaTextFor(el) {
+                const direct = (el.getAttribute('aria-label') || '').trim();
+                if (direct) return direct;
+                const ref = el.getAttribute('aria-labelledby');
+                if (!ref) return '';
+                const parts = [];
+                for (const id of ref.split(/\s+/)) {
+                    const node = document.getElementById(id);
+                    if (node) parts.push((node.innerText || node.textContent || '').trim());
+                }
+                return parts.filter(Boolean).join(' ').trim();
+            }
+            function selectorFor(el, base) {
+                if (el.id) return {selector: '#' + el.id, confidence: base};
+                if (el.name) return {selector: '[name="' + el.name + '"]', confidence: base - 0.05};
+                return {selector: 'xpath=' + getXPathForElement(el), confidence: base - 0.15};
+            }
+            for (let lbl of labels) {
+                if (results[lbl] && results[lbl].selector) continue;
+                const want = lbl.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+                if (!want) continue;
+                for (let el of ariaInputs) {
+                    const got = ariaTextFor(el).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+                    if (!got) continue;
+                    if (got === want || got.includes(want) || want.includes(got)) {
+                        results[lbl] = selectorFor(el, 0.9);
+                        break;
+                    }
+                }
+            }
+
             for (let lbl of labels) {
                 if (results[lbl] && results[lbl].selector) continue;
                 const lower = lbl.toLowerCase();
@@ -363,6 +494,33 @@ class BrowserDriver:
             const inputs = Array.from(document.querySelectorAll('input,textarea,select'));
             for (let inp of inputs) {
                 let txt = (inp.getAttribute('aria-label') || inp.getAttribute('placeholder') || '').trim();
+
+                // aria-labelledby: the label lives in a separate element that
+                // is not a <label> at all. Google Forms builds every question
+                // this way, so discovery found zero fields on one and every
+                // selector came back null.
+                if (!txt) {
+                    const ref = inp.getAttribute('aria-labelledby');
+                    if (ref) {
+                        const parts = [];
+                        for (const id of ref.split(/\s+/)) {
+                            const node = document.getElementById(id);
+                            if (node) parts.push((node.innerText || node.textContent || '').trim());
+                        }
+                        txt = parts.filter(Boolean).join(' ').trim();
+                    }
+                }
+
+                // Last resort: the nearest preceding heading-ish text inside
+                // the same question block.
+                if (!txt) {
+                    const block = inp.closest('[role="listitem"], .freebirdFormviewerViewItemsItemItem, li, fieldset, .form-group');
+                    if (block) {
+                        const head = block.querySelector('[role="heading"], legend, h1, h2, h3, h4, label');
+                        if (head) txt = (head.innerText || '').trim();
+                    }
+                }
+
                 if (!txt) {
                     const prev = inp.previousElementSibling;
                     if (prev && (prev.tagName||'').toLowerCase() === 'label') txt = (prev.innerText||'').trim();

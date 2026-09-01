@@ -46,18 +46,21 @@
     "timeout": 120,
     "max_retries": 3,
     "max_loaded_models": 1,
-    "keep_alive": "5m",
+    "keep_alive": "30m",
     "fallback_chain": [
       "gemma2:2b",
       "tinyllama:latest"
     ],
-    "num_gpu": 0
+    "num_gpu": 999
   },
   "vision": {
     "screenshot_interval": 2,
     "ocr_enabled": true,
     "object_detection": true,
     "tesseract_path": ""
+  },
+  "embeddings": {
+    "model": "nomic-embed-text"
   },
   "audio": {
     "voice_enabled": true,
@@ -87,7 +90,8 @@
     "driver": "playwright",
     "driver_browser": "chromium",
     "browsers_path": "",
-    "headless": false
+    "headless": false,
+    "persistent_profile": false
   },
   "learning": {
     "reinforcement_learning": true,
@@ -95,22 +99,34 @@
     "model_finetuning": false,
     "training_interval": "daily",
     "history_limit": 500,
-    "adaptive_min_confidence": 0.82
+    "adaptive_min_confidence": 0.82,
+    "route_min_confidence": 0.4
   },
   "system_agent": {
     "command_history_limit": 200,
     "dangerous_command_action": "confirm",
     "dangerous_patterns": [
       "format ",
+      "format-volume",
       "del /f",
+      "del /q",
+      "rd /s",
       "rmdir /s",
       "rm -rf",
+      "remove-item",
+      "clear-disk",
+      "clear-content",
       "shutdown",
+      "stop-computer",
       "restart",
+      "restart-computer",
       "reg delete",
+      "reg add",
       "bcdedit",
       "diskpart",
-      "cipher /w"
+      "cipher /w",
+      "invoke-expression",
+      "iex "
     ],
     "command_timeout_seconds": 30
   },
@@ -171,7 +187,8 @@
     "check_interval_seconds": 20,
     "allowed_senders": [
       "swapnilgite9028@gmail.com"
-    ]
+    ],
+    "confirm_before_send": false
   },
   "conversation": {
     "model": "qwen2.5:3b",

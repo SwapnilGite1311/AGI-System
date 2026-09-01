@@ -1,6 +1,14 @@
 # ============================================================================
 # ASC Core Requirements - packages the code ACTUALLY imports
 # Install: pip install -r requirements.txt
+#
+# Ollama models are a separate step (pip does not install these):
+#   ollama pull qwen2.5:3b          <- council / intent router / conversation
+#   ollama pull gemma2:2b           <- fast fallback tier
+#   ollama pull nomic-embed-text    <- semantic memory recall (optional;
+#                                      recall falls back to keyword search
+#                                      if absent, it will not error)
+#   ollama pull llava:7b            <- screen understanding (optional)
 # ============================================================================
 
 # LLM inference
@@ -10,13 +18,21 @@ ollama
 loguru
 requests
 psutil
+numpy
 
-# Voice capture + playback input
+# Voice capture + playback input (main.py voice tiers + system_agent automation)
 pyaudio
+pyttsx3
+SpeechRecognition
+pyautogui
 
 # Vision / OCR
 pillow
 pytesseract
+
+# Document generation (core/document_tools.py - Word + Excel output)
+python-docx
+openpyxl
 
 # Browser automation
 playwright
@@ -29,12 +45,12 @@ flask-cors
 pytest
 
 # ----------------------------------------------------------------------------
-# OPTIONAL - heavy experimental packages NOT currently imported by core code.
-# Install only if you enable those features:
-# torch torchvision transformers   <- neural_command_model gates on torch
+# OPTIONAL - heavy/experimental packages with a graceful fallback when absent.
+# Install only if you want the feature at full strength:
+# torch torchvision transformers   <- neural_command_model gates on torch;
+#                                      falls back to a centroid model without it
 # opencv-python ultralytics        <- future ui_detector work
 # pywinauto                        <- UI automation (see docs/UI_DETECTOR_SCOPING.md)
-# pyautogui keyboard mouse         <- screen-coordinate fallback actions
-# numpy pandas chromadb sqlalchemy <- future vector/DB backends
+# pandas chromadb sqlalchemy       <- future vector/DB backends
 # fastapi uvicorn websockets       <- alternative gateway transport
 # python-dotenv pyyaml             <- config conveniences

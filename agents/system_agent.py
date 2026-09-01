@@ -8,6 +8,7 @@ cybersecurity tools, and advanced system queries.
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -23,6 +24,10 @@ import psutil
 import pyautogui
 from loguru import logger
 import requests
+
+from core.config import load_config, data_dir
+
+from core.atomic_io import write_json_atomic
 
 
 class SystemAgent:
@@ -58,10 +63,9 @@ class SystemAgent:
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize the system agent."""
 
-        with open(config_path, "r", encoding="utf-8") as file:
-            self.config = json.load(file)
-
-        self.app_cache_file = Path("./data/app_cache.json")
+        self.config = load_config(config_path)
+        # Project-relative, not cwd-relative (audit M-5).
+        self.app_cache_file = data_dir(config_path) / "app_cache.json"
         self.app_cache = self._load_app_cache()
         self.custom_paths = self.config.get("paths", {})
 
@@ -85,12 +89,14 @@ class SystemAgent:
 
         logger.info("System Agent initialized (enhanced)")
 
-    def __del__(self):
-        """Cleanup managed processes on destruction."""
-        self.cleanup_managed_processes()
-    
     def cleanup_managed_processes(self):
-        """Clean up all managed subprocesses."""
+        """Clean up all managed subprocesses.
+
+        Explicitly-callable only - never hooked to __del__. Entries here are
+        user-launched GUI applications (open_application), not subprocesses
+        this agent owns; terminating them on garbage collection closed the
+        user's actual browser/apps when the controller shut down.
+        """
         for pid, proc in list(self.managed_processes.items()):
             try:
                 if proc.poll() is None:  # Process is still running
@@ -115,24 +121,55 @@ class SystemAgent:
     def _save_app_cache(self):
         """Persist the app cache."""
         self.app_cache_file.parent.mkdir(exist_ok=True)
-        with open(self.app_cache_file, "w", encoding="utf-8") as file:
-            json.dump(self.app_cache, file, indent=2)
+        write_json_atomic(self.app_cache_file, self.app_cache)
 
     # ============= PROCESS MANAGEMENT =============
 
-    def list_processes(self, filter_name: str = None) -> List[Dict[str, Any]]:
-        """List running processes, optionally filtered by name."""
+    def list_processes(
+        self,
+        filter_name: str = None,
+        cpu_interval: float = 0.25,
+    ) -> List[Dict[str, Any]]:
+        """List running processes, optionally filtered by name.
+
+        `cpu` is the share of the WHOLE machine each process is using right
+        now, as a percentage.
+
+        Two details matter here and both were previously wrong. psutil's
+        cpu_percent returns the average since the process started on the
+        first call for that process, so a single pass reports history, not
+        the present - that is how "System Idle Process 1264.1%" appeared.
+        And psutil sums across cores, so the raw figure is out of
+        100 * core_count rather than 100. So: prime, wait, read, divide.
+
+        Pass cpu_interval=0 to skip the wait when only names, pids or
+        memory are needed.
+        """
+        cores = psutil.cpu_count() or 1
+
+        if cpu_interval:
+            # First pass establishes the baseline each process is measured
+            # against. Its return value is the meaningless one.
+            for proc in psutil.process_iter():
+                try:
+                    proc.cpu_percent(None)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            time.sleep(cpu_interval)
+
         processes = []
-        for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
+        for proc in psutil.process_iter(["pid", "name", "memory_percent"]):
             try:
                 info = proc.info
                 name = info.get("name") or ""
                 if filter_name and filter_name.lower() not in name.lower():
                     continue
+                cpu = proc.cpu_percent(None) if cpu_interval else 0.0
                 processes.append({
                     "pid": info["pid"],
                     "name": name,
-                    "cpu": info["cpu_percent"],
+                    # Share of the whole machine, so it cannot exceed 100.
+                    "cpu": round(cpu / cores, 1),
                     "memory": info["memory_percent"],
                 })
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -192,21 +229,84 @@ class SystemAgent:
         return []
 
     def kill_process(self, process_name: str = None, pid: int = None) -> Dict[str, Any]:
-        """Kill a process by name or PID."""
+        """Kill a process by name or PID.
+
+        Never targets this process itself, and matches names by exact stem
+        (case-insensitive, .exe-agnostic) rather than bare substring - a
+        substring match let "close python" or "close system" terminate every
+        process whose name merely contained that text, unconfirmed.
+        """
+        my_pid = os.getpid()
         try:
             if pid:
-                proc = psutil.Process(pid)
+                if pid == my_pid:
+                    return {"success": False, "error": "Refusing to terminate the VEGA process itself."}
+                try:
+                    proc = psutil.Process(pid)
+                except psutil.NoSuchProcess:
+                    # Not an error worth a stack-trace message: the caller
+                    # asked for something that is not running.
+                    return {
+                        "success": False,
+                        "pid": pid,
+                        "error": f"No process with PID {pid} is running.",
+                    }
                 proc.terminate()
+                # terminate() is a request, not a guarantee. Give it a
+                # moment and confirm, rather than reporting a process
+                # closed while it is still running.
+                try:
+                    proc.wait(timeout=3)
+                except psutil.TimeoutExpired:
+                    return {
+                        "success": False,
+                        "pid": pid,
+                        "error": (f"Asked PID {pid} to close, but it is still "
+                                  "running after 3 seconds."),
+                        "still_running": True,
+                    }
                 logger.info("Killed process PID: {}", pid)
-                return {"success": True, "pid": pid}
+                return {"success": True, "pid": pid, "verified": True}
             if process_name:
-                killed_count = 0
+                target = process_name.lower().strip()
+                target_stem = target[:-4] if target.endswith(".exe") else target
+                targeted = []
                 for proc in psutil.process_iter(["pid", "name"]):
-                    if process_name.lower() in (proc.info.get("name") or "").lower():
-                        proc.terminate()
-                        killed_count += 1
-                logger.info("Killed {} instances of {}", killed_count, process_name)
-                return {"success": True, "killed": killed_count, "process": process_name}
+                    if proc.info.get("pid") == my_pid:
+                        continue
+                    name = (proc.info.get("name") or "").lower()
+                    stem = name[:-4] if name.endswith(".exe") else name
+                    if stem == target_stem:
+                        try:
+                            proc.terminate()
+                            targeted.append(proc)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+
+                if not targeted:
+                    return {
+                        "success": False,
+                        "killed": 0,
+                        "process": process_name,
+                        "error": f"No running process named {process_name!r}.",
+                    }
+
+                # Count what actually went away, not what was asked to.
+                gone, survived = psutil.wait_procs(targeted, timeout=3)
+                if survived:
+                    return {
+                        "success": False,
+                        "killed": len(gone),
+                        "still_running": [p.pid for p in survived],
+                        "process": process_name,
+                        "error": (f"Closed {len(gone)} of {len(targeted)} "
+                                  f"{process_name} processes; "
+                                  f"{len(survived)} ignored the request."),
+                    }
+
+                logger.info("Killed {} instances of {}", len(gone), process_name)
+                return {"success": True, "killed": len(gone),
+                        "process": process_name, "verified": True}
             return {"success": False, "error": "No process name or PID provided"}
         except Exception as exc:
             logger.error("Kill process failed: {}", str(exc))
@@ -355,16 +455,30 @@ class SystemAgent:
                         "error": f"'{app_name}' does not look like an installed application.",
                     }
                 try:
-                    joined_args = " ".join(f'"{arg}"' for arg in (args or []))
-                    process = subprocess.Popen(f'start "" "{app_name}" {joined_args}'.strip(), shell=True)
+                    # Argument list with shell=False: each element is passed
+                    # as a single unit (Windows list2cmdline quoting), so a
+                    # model-supplied app_name containing shell metacharacters
+                    # (&, |, ;) cannot be interpreted as a command separator
+                    # the way the old f-string-into-shell=True form allowed.
+                    process = subprocess.Popen(
+                        ["cmd", "/c", "start", "", app_name, *(args or [])],
+                        shell=False,
+                    )
                     self.managed_processes[process.pid] = process
                     logger.success("Opened via start: {}", app_name)
                     return {
                         "success": True,
                         "application": app_name,
-                        "pid": process.pid,
+                        # This is cmd.exe's pid, not the application's -
+                        # "start" hands off and exits. Naming it honestly
+                        # stops callers treating it as the app's process.
+                        "pid": None,
+                        "launcher_pid": process.pid,
                         "path": app_name,
                         "launch_mode": "start_fallback",
+                        "note": ("Handed to the Windows shell; whether the "
+                                 "application stayed open is not observable "
+                                 "from here."),
                     }
                 except Exception as exc:
                     logger.warning("Windows start fallback failed for {}: {}", app_name, str(exc))
@@ -379,8 +493,28 @@ class SystemAgent:
                 cmd.extend(args)
             process = subprocess.Popen(cmd, shell=False)
             self.managed_processes[process.pid] = process
+
+            # Popen returns the instant the process is spawned, so a program
+            # that dies immediately - missing DLL, bad argument, instant
+            # crash - was still reported as opened, with a PID that had
+            # already gone. Give it a moment and check it is still alive.
+            time.sleep(0.4)
+            exit_code = process.poll()
+            if exit_code is not None and exit_code != 0:
+                self.managed_processes.pop(process.pid, None)
+                logger.error("{} exited immediately with code {}", app_name, exit_code)
+                return {
+                    "success": False,
+                    "application": app_name,
+                    "error": (f"{app_name} started and then exited immediately "
+                              f"with code {exit_code}"),
+                    "exit_code": exit_code,
+                    "path": exe,
+                }
+
             logger.success("Opened: {} (PID: {})", app_name, process.pid)
-            return {"success": True, "application": app_name, "pid": process.pid, "path": exe}
+            return {"success": True, "application": app_name, "pid": process.pid,
+                    "path": exe, "still_running": exit_code is None}
         except Exception as exc:
             logger.error("Failed to open {}: {}", app_name, str(exc))
             return {"success": False, "application": app_name, "error": str(exc)}
@@ -404,6 +538,21 @@ class SystemAgent:
 
     def start_voice_server(self, wait: bool = True, timeout: int = 15) -> Dict[str, Any]:
         """Attempt to start the voice server using the local-server path."""
+        # Idempotent: only one process can hold port 5000, so spawning a
+        # second one leaves an orphan that never binds while the health check
+        # passes against the FIRST one - reporting success for a process that
+        # did nothing. Repeated "start voice server" commands piled these up
+        # (five were found running at once), and worse, a stale server from an
+        # earlier session keeps serving old code while every new start looks
+        # like it succeeded.
+        if self.health_check_voice_server(timeout=2.0):
+            return {
+                "success": True,
+                "already_running": True,
+                "voice_service_url": self.config.get("audio", {}).get("voice_service_url"),
+                "message": "Voice server is already running; no new process started.",
+            }
+
         # local-server is a sibling of AGI-System:
         #   <root>/AGI-System/agents/system_agent.py -> parents[2] = <root>
         # Override with VOICE_SERVER_PATH env var when placed elsewhere.
@@ -431,7 +580,11 @@ class SystemAgent:
             return {"success": False, "error": str(exc)}
 
         if not wait:
-            return {"success": True, "pid": proc.pid, "started": True}
+            # The caller asked not to wait, so "started" means the process
+            # was spawned - not that Ollama is answering yet.
+            return {"success": True, "pid": proc.pid, "started": True,
+                    "verified": False,
+                    "note": "Not health-checked; wait=False was requested."}
 
         start = time.time()
         while time.time() - start < timeout:
@@ -453,7 +606,17 @@ class SystemAgent:
                     cmdline = proc.info.get('cmdline', [])
                     if cmdline and 'server.py' in ' '.join(cmdline):
                         proc.terminate()
-                        return {"success": True, "stopped": True, "pid": proc.pid}
+                        try:
+                            proc.wait(timeout=5)
+                        except psutil.TimeoutExpired:
+                            return {
+                                "success": False,
+                                "pid": proc.pid,
+                                "error": ("Asked the voice server to stop, but "
+                                          "it is still running."),
+                            }
+                        return {"success": True, "stopped": True,
+                                "pid": proc.pid, "verified": True}
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         return {"success": False, "error": "Voice server process not found."}
@@ -509,15 +672,30 @@ class SystemAgent:
 
     def stop_ollama(self) -> Dict[str, Any]:
         """Terminate running Ollama processes."""
-        killed = 0
+        targeted = []
         for proc in psutil.process_iter(["pid", "name"]):
             try:
                 if proc.info.get("name") and "ollama" in proc.info.get("name").lower():
                     proc.terminate()
-                    killed += 1
+                    targeted.append(proc)
             except Exception:
                 continue
-        return {"success": True, "killed": killed}
+
+        if not targeted:
+            return {"success": True, "killed": 0,
+                    "message": "Ollama was not running."}
+
+        # terminate() is a request. Count what actually exited.
+        gone, survived = psutil.wait_procs(targeted, timeout=5)
+        if survived:
+            return {
+                "success": False,
+                "killed": len(gone),
+                "still_running": [proc.pid for proc in survived],
+                "error": (f"Stopped {len(gone)} of {len(targeted)} Ollama "
+                          f"processes; {len(survived)} are still running."),
+            }
+        return {"success": True, "killed": len(gone), "verified": True}
 
     def search_applications(self, query: str = None) -> List[Dict[str, Any]]:
         """Search for installed applications."""
@@ -549,10 +727,56 @@ class SystemAgent:
 
     # ============= COMMAND EXECUTION WITH SAFETY =============
 
+    # Verbs that destroy data regardless of the flags that follow, matched on
+    # word boundaries. The configured dangerous_patterns list is a substring
+    # check over specific flag combinations ("del /f", "del /q"), which left
+    # real holes: "del important.txt" with no flags was allowed, and both
+    # "ri" (PowerShell's alias for Remove-Item) and "erase" (cmd's alias for
+    # del) passed straight through while doing exactly the same damage.
+    DESTRUCTIVE_VERBS = (
+        # PowerShell cmdlets and their built-in aliases
+        "remove-item", "ri", "rm", "rmdir", "rd", "del", "erase",
+        "clear-content", "clear-disk", "clear-item",
+        "format-volume", "initialize-disk", "remove-partition",
+        "stop-computer", "restart-computer", "shutdown",
+        "remove-localuser", "remove-item-property", "remove-itemproperty",
+        # cmd / unix
+        "format", "diskpart", "bcdedit", "cipher",
+        # arbitrary execution
+        "invoke-expression", "iex",
+    )
+
+    # Registry writes are destructive even though the verb is "add".
+    DESTRUCTIVE_PHRASES = (
+        "reg delete", "reg add", "reg import",
+        "set-executionpolicy", "vssadmin delete",
+    )
+
     def is_dangerous_command(self, command: str) -> bool:
-        """Check if a command matches any dangerous pattern."""
-        cmd_lower = command.lower()
-        return any(pattern.lower() in cmd_lower for pattern in self.dangerous_patterns)
+        """Whether this command can destroy data or change system state.
+
+        Word-boundary matched rather than substring matched, so a bare verb
+        with no flags is caught and an alias cannot slip past by not being
+        spelled out in config. Deliberately errs toward blocking: a false
+        positive costs one confirmation prompt, a false negative costs the
+        user's files.
+        """
+        cmd_lower = (command or "").lower()
+
+        # Configured patterns still apply - this only ever adds coverage.
+        if any(pattern.lower() in cmd_lower for pattern in self.dangerous_patterns):
+            return True
+
+        if any(phrase in cmd_lower for phrase in self.DESTRUCTIVE_PHRASES):
+            return True
+
+        # A destructive verb anywhere a command could start: at the very
+        # beginning, or after a separator (| ; & newline) that begins a new
+        # statement in both PowerShell and cmd.
+        for verb in self.DESTRUCTIVE_VERBS:
+            if re.search(rf"(?:^|[|;&\n]\s*)\s*{re.escape(verb)}\b", cmd_lower):
+                return True
+        return False
 
     def is_network_call(self, command: str) -> bool:
         """Detect shell commands attempting direct network requests.
@@ -617,13 +841,23 @@ class SystemAgent:
             )
             elapsed = round(time.time() - start_time, 3)
 
+            # Cap captured output: an unbounded command (e.g. a recursive
+            # directory listing) can produce hundreds of MB inside the
+            # timeout window, which then gets stored again in command
+            # history, the execution journal, and episodic memory.
+            max_output_chars = 20000
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            truncated = len(stdout) > max_output_chars or len(stderr) > max_output_chars
             entry = {
                 "success": result.returncode == 0,
-                "output": result.stdout,
-                "error": result.stderr,
+                "output": stdout[:max_output_chars],
+                "error": stderr[:max_output_chars],
                 "return_code": result.returncode,
                 "elapsed_seconds": elapsed,
             }
+            if truncated:
+                entry["output_truncated"] = True
 
             # Track history
             self._record_command(command, shell, entry)
@@ -910,7 +1144,10 @@ class SystemAgent:
         """Type text into the active application."""
         try:
             pyautogui.write(text, interval=interval)
-            return {"success": True, "text": text}
+            # success means the input was EMITTED. Nothing here can see
+            # whether it reached the field the caller had in mind.
+            return {"success": True, "text": text, "verified": False,
+                    "note": "Keystrokes are emitted to the OS; where they land depends on which window has focus, which is not observable from here."}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -918,7 +1155,8 @@ class SystemAgent:
         """Press a single key."""
         try:
             pyautogui.press(key)
-            return {"success": True, "key": key}
+            return {"success": True, "key": key, "verified": False,
+                    "note": "Keystrokes are emitted to the OS; where they land depends on which window has focus, which is not observable from here."}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -926,7 +1164,8 @@ class SystemAgent:
         """Press a keyboard shortcut such as Ctrl+A or Ctrl+L."""
         try:
             pyautogui.hotkey(*keys)
-            return {"success": True, "keys": list(keys)}
+            return {"success": True, "keys": list(keys), "verified": False,
+                    "note": "Keystrokes are emitted to the OS; where they land depends on which window has focus, which is not observable from here."}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -937,7 +1176,10 @@ class SystemAgent:
                 pyautogui.click(x, y)
             else:
                 pyautogui.click()
-            return {"success": True, "x": x, "y": y}
+            return {"success": True, "x": x, "y": y, "verified": False,
+                    "note": ("The click was sent to those screen coordinates; "
+                             "what was underneath them is not observable "
+                             "from here.")}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 

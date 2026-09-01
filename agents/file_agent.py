@@ -12,6 +12,8 @@ from pathlib import Path
 from datetime import datetime
 from loguru import logger
 
+from core.config import load_config
+
 
 class FileAgent:
     """
@@ -22,164 +24,272 @@ class FileAgent:
     - Backup operations
     - Duplicate detection & disk analysis
     """
-    
+
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize file agent"""
-        
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = json.load(f)
-        
+
+        self.config = load_config(config_path)
         self.home = Path.home()
-        
+        # Anchored to the project, not the working directory: the delete
+        # guard used to widen to whatever directory ASC happened to be
+        # launched from, so starting it in C:\ authorised deleting
+        # C:\Windows (audit H-2).
+        self.project_root = Path(config_path).resolve().parent.parent
+
         # Load file_agent config
         fa_config = self.config.get("file_agent", {})
-        self.undo_manifest_dir = Path(fa_config.get("undo_manifest_dir", "./data/undo_manifests"))
+        configured_undo = Path(fa_config.get("undo_manifest_dir", "./data/undo_manifests"))
+        self.undo_manifest_dir = (
+            configured_undo if configured_undo.is_absolute()
+            else self.project_root / configured_undo
+        )
         self.undo_manifest_dir.mkdir(parents=True, exist_ok=True)
         self.max_undo_manifests = int(fa_config.get("max_undo_manifests", 20))
         self.hash_algo = fa_config.get("duplicate_hash_algorithm", "md5")
         self.max_files_for_hash = int(fa_config.get("max_files_for_hash", 5000))
-        
+
         logger.info("📁 File Agent initialized (enhanced)")
-    
+
+    def _is_safe_path(self, path: Path) -> bool:
+        """Restrict destructive operations to the user's home directory or
+        the project tree.
+
+        Model-supplied and regex-extracted paths reach delete_file/
+        delete_folder with no other validation; a hallucinated or
+        misparsed path could otherwise delete anything the OS permissions
+        allow. This does not affect create/read/list operations, which are
+        far lower risk than irreversible deletion.
+
+        The second root used to be Path.cwd(), which meant the guard's
+        breadth depended on where ASC was launched from - starting it in
+        C:\\ authorised deleting C:\\Windows and C:\\Program Files, silently
+        turning the guard off (audit H-2). It is now anchored to the project
+        directory, which does not move.
+
+        Even inside an allowed root, a handful of paths are never
+        deletable: the project's own source and data, and the user's
+        top-level home directory itself.
+        """
+        try:
+            resolved = path.resolve()
+        except Exception:
+            return False
+
+        # Never delete the project's own code/state, or a whole home dir.
+        for forbidden in (self.project_root, self.project_root / "data",
+                          self.project_root / "core", self.project_root / "agents",
+                          self.home):
+            try:
+                if resolved == forbidden.resolve():
+                    return False
+            except Exception:
+                continue
+
+        for root in (self.home, self.project_root):
+            try:
+                resolved.relative_to(root.resolve())
+                return True
+            except ValueError:
+                continue
+        return False
+
     # ============= BASIC FILE OPERATIONS =============
-    
+
     def create_file(self, filepath: str, content: str = "") -> Dict[str, Any]:
         """
         Create a new file
-        
+
         Args:
             filepath: Path to file
             content: Initial content
-        
+
         Returns:
             Result with file info
         """
-        
+
         try:
             path = Path(filepath)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding='utf-8')
-            
+
             logger.success("✅ Created file: {}", filepath)
             return {
                 "success": True,
                 "path": str(path),
                 "size": path.stat().st_size
             }
-            
+
         except Exception as e:
             logger.error("❌ Create file failed: {}", str(e))
             return {"success": False, "error": str(e)}
-    
+
     def create_folder(self, folderpath: str) -> Dict[str, Any]:
         """Create a new folder"""
-        
+
         try:
             path = Path(folderpath)
             path.mkdir(parents=True, exist_ok=True)
-            
+
+            if not path.is_dir():
+                return {
+                    "success": False,
+                    "error": f"{path} was reported created but is not a folder on disk",
+                }
+
             logger.success("✅ Created folder: {}", folderpath)
-            return {"success": True, "path": str(path)}
-            
+            return {"success": True, "path": str(path), "verified": True}
+
         except Exception as e:
             logger.error("❌ Create folder failed: {}", str(e))
             return {"success": False, "error": str(e)}
-    
+
     def delete_file(self, filepath: str) -> Dict[str, Any]:
         """Delete a file"""
-        
+
         try:
             path = Path(filepath)
+            if not self._is_safe_path(path):
+                return {
+                    "success": False,
+                    "error": f"Refusing to delete outside your home or working directory: {path}",
+                }
             if path.is_file():
                 path.unlink()
                 logger.info("🗑️ Deleted file: {}", filepath)
                 return {"success": True, "path": str(path)}
             else:
                 return {"success": False, "error": "Not a file"}
-                
+
         except Exception as e:
             logger.error("❌ Delete file failed: {}", str(e))
             return {"success": False, "error": str(e)}
-    
+
     def delete_folder(self, folderpath: str, recursive: bool = False) -> Dict[str, Any]:
         """
         Delete a folder
-        
+
         Args:
             folderpath: Path to folder
             recursive: If True, delete even if not empty
         """
-        
+
         try:
             path = Path(folderpath)
+            if not self._is_safe_path(path):
+                return {
+                    "success": False,
+                    "error": f"Refusing to delete outside your home or working directory: {path}",
+                }
             if path.is_dir():
                 if recursive:
                     shutil.rmtree(path)
                 else:
                     path.rmdir()  # Only works if empty
-                
+
                 logger.info("🗑️ Deleted folder: {}", folderpath)
                 return {"success": True, "path": str(path)}
             else:
                 return {"success": False, "error": "Not a folder"}
-                
+
         except Exception as e:
             logger.error("❌ Delete folder failed: {}", str(e))
             return {"success": False, "error": str(e)}
-    
+
     def move_file(self, source: str, destination: str) -> Dict[str, Any]:
         """Move/rename a file"""
-        
+
         try:
             src = Path(source)
             dst = Path(destination)
-            
+
             # Create destination folder if needed
             dst.parent.mkdir(parents=True, exist_ok=True)
-            
+
             shutil.move(str(src), str(dst))
-            
+
+            # A move that left the file behind, or did not produce the
+            # destination, is not a move - whatever shutil returned.
+            if not dst.exists():
+                return {
+                    "success": False,
+                    "error": f"Move reported no error but {dst} does not exist",
+                    "source": str(src),
+                    "destination": str(dst),
+                }
+            if src.exists():
+                return {
+                    "success": False,
+                    "error": (f"Copied to {dst} but {src} is still there - "
+                              "the move did not complete"),
+                    "source": str(src),
+                    "destination": str(dst),
+                }
+
             logger.info("📦 Moved: {} -> {}", source, destination)
             return {
                 "success": True,
                 "source": str(src),
-                "destination": str(dst)
+                "destination": str(dst),
+                "size": dst.stat().st_size if dst.is_file() else None,
+                "verified": True,
             }
-            
+
         except Exception as e:
             logger.error("❌ Move file failed: {}", str(e))
             return {"success": False, "error": str(e)}
-    
+
     def copy_file(self, source: str, destination: str) -> Dict[str, Any]:
         """Copy a file"""
-        
+
         try:
             src = Path(source)
             dst = Path(destination)
-            
+
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(src), str(dst))
-            
+
+            if not dst.exists():
+                return {
+                    "success": False,
+                    "error": f"Copy reported no error but {dst} does not exist",
+                    "source": str(src),
+                    "destination": str(dst),
+                }
+            # A truncated copy is a real failure mode on a full volume, and
+            # it is invisible unless the sizes are compared.
+            if src.is_file() and dst.is_file():
+                src_size, dst_size = src.stat().st_size, dst.stat().st_size
+                if src_size != dst_size:
+                    return {
+                        "success": False,
+                        "error": (f"Copy is incomplete: {src_size} bytes at the "
+                                  f"source, {dst_size} at {dst}"),
+                        "source": str(src),
+                        "destination": str(dst),
+                    }
+
             logger.info("📋 Copied: {} -> {}", source, destination)
             return {
                 "success": True,
                 "source": str(src),
-                "destination": str(dst)
+                "destination": str(dst),
+                "size": dst.stat().st_size if dst.is_file() else None,
+                "verified": True,
             }
-            
+
         except Exception as e:
             logger.error("❌ Copy file failed: {}", str(e))
             return {"success": False, "error": str(e)}
-    
+
     # ============= FILE INFORMATION =============
-    
+
     def get_file_info(self, filepath: str) -> Dict[str, Any]:
         """Get detailed file information"""
-        
+
         try:
             path = Path(filepath)
             stat = path.stat()
-            
+
             return {
                 "success": True,
                 "name": path.name,
@@ -192,27 +302,27 @@ class FileAgent:
                 "is_file": path.is_file(),
                 "is_folder": path.is_dir()
             }
-            
+
         except Exception as e:
             logger.error("❌ Get file info failed: {}", str(e))
             return {"success": False, "error": str(e)}
-    
+
     def list_files(self, folderpath: str, pattern: str = "*") -> List[Dict[str, Any]]:
         """
         List files in a folder
-        
+
         Args:
             folderpath: Folder to list
             pattern: File pattern (e.g., "*.txt", "*.py")
-        
+
         Returns:
             List of file information
         """
-        
+
         try:
             path = Path(folderpath)
             files = []
-            
+
             for item in path.glob(pattern):
                 try:
                     stat = item.stat()
@@ -224,27 +334,28 @@ class FileAgent:
                         "is_file": item.is_file(),
                         "is_folder": item.is_dir()
                     })
-                except:
+                # Exception, not bare: a bare except swallowed Ctrl+C mid-scan.
+                except Exception:
                     continue
-            
+
             logger.debug("📋 Listed {} items in {}", len(files), folderpath)
             return files
-            
+
         except Exception as e:
             logger.error("❌ List files failed: {}", str(e))
             return []
-    
+
     # ============= INTELLIGENT ORGANIZATION =============
-    
+
     def organize_folder(self, folderpath: str) -> Dict[str, Any]:
         """
         Automatically organize a folder by file type.
         Creates subfolders: Documents, Images, Videos, Audio, Archives, Code, Executables, Others.
         Saves a manifest file in self.undo_manifest_dir so the action can be undone.
         """
-        
+
         logger.info("🗂️ Organizing folder with undo tracking: {}", folderpath)
-        
+
         # Category definitions
         categories = {
             "Documents": [".pdf", ".doc", ".docx", ".txt", ".rtf", ".odt", ".xls", ".xlsx", ".ppt", ".pptx", ".md", ".csv"],
@@ -255,18 +366,18 @@ class FileAgent:
             "Code": [".py", ".js", ".html", ".css", ".java", ".cpp", ".c", ".json", ".xml", ".ts", ".go", ".rs"],
             "Executables": [".exe", ".msi", ".bat", ".sh", ".cmd"],
         }
-        
+
         try:
             path = Path(folderpath)
             if not path.is_dir():
                 return {"success": False, "error": f"Not a directory: {folderpath}"}
-                
+
             moved_files = []
             moved_count = 0
-            
+
             # Get all files (not folders)
             files = [f for f in path.iterdir() if f.is_file()]
-            
+
             for file in files:
                 # Determine category
                 category = "Others"
@@ -274,45 +385,45 @@ class FileAgent:
                     if file.suffix.lower() in extensions:
                         category = cat
                         break
-                
+
                 # Create category folder
                 category_folder = path / category
                 category_folder.mkdir(exist_ok=True)
-                
+
                 # Move file
                 destination = category_folder / file.name
-                
+
                 # Handle name conflicts
                 counter = 1
                 while destination.exists():
                     stem = file.stem
                     destination = category_folder / f"{stem}_{counter}{file.suffix}"
                     counter += 1
-                
+
                 orig_str = str(file.absolute())
                 dest_str = str(destination.absolute())
-                
+
                 shutil.move(str(file), str(destination))
                 moved_files.append({"from": orig_str, "to": dest_str})
                 moved_count += 1
-            
+
             # Save manifest if any files were moved
             manifest_id = None
             if moved_count > 0:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 manifest_id = f"manifest_{timestamp}"
                 manifest_path = self.undo_manifest_dir / f"{manifest_id}.json"
-                
+
                 manifest_data = {
                     "manifest_id": manifest_id,
                     "folderpath": str(path.absolute()),
                     "timestamp": datetime.now().isoformat(),
                     "moved_files": moved_files
                 }
-                
+
                 manifest_path.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
                 self._prune_manifests()
-            
+
             logger.success("✅ Organized {} files. Manifest ID: {}", moved_count, manifest_id)
             return {
                 "success": True,
@@ -320,7 +431,7 @@ class FileAgent:
                 "categories": list(categories.keys()) + ["Others"],
                 "manifest_id": manifest_id
             }
-            
+
         except Exception as e:
             logger.error("❌ Organization failed: {}", str(e))
             return {"success": False, "error": str(e)}
@@ -342,17 +453,17 @@ class FileAgent:
                 manifest_path = self.undo_manifest_dir / f"{manifest_id}.json"
                 if not manifest_path.exists():
                     return {"success": False, "error": f"Manifest not found: {manifest_id}"}
-            
+
             manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
             moved_files = manifest_data.get("moved_files", [])
             restored_count = 0
             errors = []
-            
+
             # Iterate in reverse to avoid any conflict
             for move in reversed(moved_files):
                 src = Path(move["to"])
                 dst = Path(move["from"])
-                
+
                 if src.exists():
                     # Create parent folder if it was deleted
                     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -360,7 +471,7 @@ class FileAgent:
                     restored_count += 1
                 else:
                     errors.append(f"File not found to restore: {move['to']}")
-            
+
             # Clean up empty category folders that might have been created during organization
             folderpath = Path(manifest_data["folderpath"])
             categories = ["Documents", "Images", "Videos", "Audio", "Archives", "Code", "Executables", "Others"]
@@ -371,17 +482,17 @@ class FileAgent:
                         cat_dir.rmdir()
                     except Exception:
                         pass
-            
+
             # Delete manifest file after success
             manifest_path.unlink()
-            
+
             return {
                 "success": len(errors) == 0,
                 "restored_files": restored_count,
                 "errors": errors,
                 "manifest_id": manifest_id
             }
-            
+
         except Exception as e:
             logger.error("❌ Restore failed: {}", str(e))
             return {"success": False, "error": str(e)}
@@ -405,7 +516,7 @@ class FileAgent:
             path = Path(folderpath)
             if not path.is_dir():
                 return {"success": False, "error": f"Not a directory: {folderpath}"}
-                
+
             files_by_size = {}
             # Group by file size first (very fast, avoids hashing everything)
             file_count = 0
@@ -425,19 +536,19 @@ class FileAgent:
                         continue
                 if file_count > self.max_files_for_hash:
                     break
-            
+
             # For sizes with multiple files, calculate hashes
             duplicates = {}
             for size, file_list in files_by_size.items():
                 if len(file_list) < 2:
                     continue
-                
+
                 hashes = {}
                 for fp in file_list:
                     h = self._calculate_file_hash(fp)
                     if h:
                         hashes.setdefault(h, []).append(str(fp.absolute()))
-                
+
                 for h, paths in hashes.items():
                     if len(paths) > 1:
                         duplicates[h] = {
@@ -445,7 +556,7 @@ class FileAgent:
                             "size_mb": round(size / (1024 * 1024), 3),
                             "files": paths
                         }
-            
+
             return {
                 "success": True,
                 "duplicates_found": len(duplicates),
@@ -456,13 +567,19 @@ class FileAgent:
             return {"success": False, "error": str(e)}
 
     def _calculate_file_hash(self, file_path: Path) -> Optional[str]:
-        """Helper to hash a file."""
+        """Hash a file's full content in chunks.
+
+        Previously only the first 1MB was hashed, so two large files sharing
+        the same size and leading bytes (e.g. two videos with identical
+        headers) were reported as duplicates even when their content
+        diverged later - a false positive a user could act on by deleting a
+        genuinely distinct file.
+        """
         try:
             hasher = hashlib.new(self.hash_algo)
-            # Read first 1MB or full file if smaller
             with open(file_path, "rb") as f:
-                buf = f.read(1024 * 1024)
-                hasher.update(buf)
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    hasher.update(chunk)
             return hasher.hexdigest()
         except Exception:
             return None
@@ -476,10 +593,10 @@ class FileAgent:
             path = Path(folderpath)
             if not path.is_dir():
                 return {"success": False, "error": f"Not a directory: {folderpath}"}
-                
+
             total_size = 0
             items_list = []
-            
+
             # Calculate size for direct children (subdirs and files)
             for item in path.iterdir():
                 try:
@@ -494,10 +611,10 @@ class FileAgent:
                     })
                 except Exception:
                     continue
-            
+
             # Sort items by size descending
             items_list.sort(key=lambda x: x["size_bytes"], reverse=True)
-            
+
             return {
                 "success": True,
                 "folder_path": str(path.absolute()),
@@ -535,27 +652,27 @@ class FileAgent:
             path = Path(folderpath)
             if not path.is_dir():
                 return {"success": False, "error": f"Not a directory: {folderpath}"}
-                
+
             renamed = []
             errors = []
-            
+
             for item in path.iterdir():
                 if not item.is_file():
                     continue
-                
+
                 # Check extension filter
                 if extension and item.suffix.lower() != extension.lower():
                     continue
-                    
+
                 if find_str in item.name:
                     new_name = item.name.replace(find_str, replace_str)
                     new_path = item.parent / new_name
-                    
+
                     # Prevent overwriting
                     if new_path.exists():
                         errors.append(f"Cannot rename '{item.name}' to '{new_name}': Destination already exists.")
                         continue
-                        
+
                     try:
                         item.rename(new_path)
                         renamed.append({
@@ -565,7 +682,7 @@ class FileAgent:
                         })
                     except Exception as ex:
                         errors.append(f"Failed to rename '{item.name}': {str(ex)}")
-            
+
             return {
                 "success": len(renamed) > 0,
                 "renamed_count": len(renamed),
@@ -575,39 +692,39 @@ class FileAgent:
         except Exception as e:
             logger.error("❌ Batch rename failed: {}", str(e))
             return {"success": False, "error": str(e)}
-    
+
     # ============= SEARCH =============
-    
+
     def search_files(
-        self, 
-        folderpath: str, 
-        query: str, 
+        self,
+        folderpath: str,
+        query: str,
         search_content: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Search for files by name or content
-        
+
         Args:
             folderpath: Folder to search in
             query: Search query
             search_content: If True, search inside files too
-        
+
         Returns:
             List of matching files
         """
-        
+
         logger.info("🔍 Searching for: {}", query)
-        
+
         results = []
         path = Path(folderpath)
         query_lower = query.lower()
-        
+
         try:
             # Search by filename
             for item in path.rglob("*"):
                 if not item.is_file():
                     continue
-                
+
                 # Check filename
                 if query_lower in item.name.lower():
                     results.append({
@@ -615,7 +732,7 @@ class FileAgent:
                         "name": item.name,
                         "match_type": "filename"
                     })
-                
+
                 # Check content if requested
                 elif search_content and item.suffix in ['.txt', '.py', '.js', '.json', '.md']:
                     try:
@@ -626,50 +743,68 @@ class FileAgent:
                                 "name": item.name,
                                 "match_type": "content"
                             })
-                    except:
+                    # Not a bare except: that also caught KeyboardInterrupt,
+                    # so Ctrl+C during a large scan was absorbed and the loop
+                    # kept going (audit M-7).
+                    except Exception:
                         pass
-            
+
             logger.debug("🔍 Found {} matches", len(results))
             return results
-            
+
         except Exception as e:
             logger.error("❌ Search failed: {}", str(e))
             return []
-    
+
     # ============= BACKUP =============
-    
+
     def backup_folder(self, source: str, backup_name: str = None) -> Dict[str, Any]:
         """
         Create backup of a folder
-        
+
         Args:
             source: Folder to backup
             backup_name: Name for backup (default: auto-generated)
         """
-        
+
         try:
             src = Path(source)
-            
+
             if backup_name is None:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 backup_name = f"{src.name}_backup_{timestamp}"
-            
+
             # Create backups folder
             backups_dir = self.home / "AGI_Backups"
             backups_dir.mkdir(exist_ok=True)
-            
+
             backup_path = backups_dir / backup_name
-            
+
             # Copy entire folder
             shutil.copytree(src, backup_path)
-            
+
+            # A backup nobody counted is not a backup. Compare file counts
+            # so a partial copy is reported rather than celebrated.
+            source_files = sum(1 for _ in src.rglob("*") if _.is_file())
+            backup_files = sum(1 for _ in backup_path.rglob("*") if _.is_file())
+            if backup_files != source_files:
+                return {
+                    "success": False,
+                    "source": str(src),
+                    "backup_path": str(backup_path),
+                    "error": (f"Backup is incomplete: {source_files} files at "
+                              f"the source, {backup_files} in the backup."),
+                }
+
             logger.success("✅ Backup created: {}", backup_path)
             return {
                 "success": True,
                 "source": str(src),
-                "backup_path": str(backup_path)
+                "backup_path": str(backup_path),
+                "files": backup_files,
+                "verified": True,
             }
-            
+
         except Exception as e:
             logger.error("❌ Backup failed: {}", str(e))
             return {"success": False, "error": str(e)}
@@ -678,38 +813,38 @@ class FileAgent:
 # Test function
 def test_file_agent():
     """Test file agent"""
-    
+
     agent = FileAgent()
-    
+
     # Create test folder
     test_folder = Path("./data/test_files")
     test_folder.mkdir(parents=True, exist_ok=True)
-    
+
     print("\n=== TEST 1: Create Files ===")
     agent.create_file(str(test_folder / "test.txt"), "Hello AGI!")
     agent.create_file(str(test_folder / "document.pdf"), "")
     agent.create_file(str(test_folder / "script.py"), "print('test')")
     agent.create_file(str(test_folder / "image.png"), "")
     print("Created 4 test files")
-    
+
     print("\n=== TEST 2: List Files ===")
     files = agent.list_files(str(test_folder))
     print(f"Found {len(files)} files:")
     for f in files:
         print(f"  - {f['name']} ({f['size']} bytes)")
-    
+
     print("\n=== TEST 3: Get File Info ===")
     info = agent.get_file_info(str(test_folder / "test.txt"))
     print(json.dumps(info, indent=2))
-    
+
     print("\n=== TEST 4: Organize Folder ===")
     result = agent.organize_folder(str(test_folder))
     print(f"Organized {result.get('files_organized', 0)} files")
-    
+
     print("\n=== TEST 5: Search ===")
     results = agent.search_files(str(test_folder), "test")
     print(f"Found {len(results)} matches for 'test'")
-    
+
     # Cleanup
     print("\n=== Cleaning up test files ===")
     shutil.rmtree(test_folder)

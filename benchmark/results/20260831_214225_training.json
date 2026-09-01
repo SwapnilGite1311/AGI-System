@@ -1,0 +1,821 @@
+{
+  "run_at": "2026-08-31T21:42:25",
+  "corpus": {
+    "intents": 22,
+    "train_kept": 108,
+    "train_dropped": 75,
+    "holdout": 65
+  },
+  "before": {
+    "correct": 42,
+    "total": 65,
+    "accuracy": 0.646,
+    "unknown": 15,
+    "rows": [
+      {
+        "phrase": "how's my computer holding up",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "run a health check on this machine",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "tell me about this pc",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "is everything running okay",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "give me the rundown on this box",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "am i running out of storage",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "how much room is left on this thing",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "show me the partitions",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "is my disk nearly full",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "what's my free capacity",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "what's eating my ram",
+        "want": "system",
+        "got": "general",
+        "hit": false
+      },
+      {
+        "phrase": "show me what's chewing cpu",
+        "want": "system",
+        "got": "general",
+        "hit": false
+      },
+      {
+        "phrase": "which program is slowing things down",
+        "want": "system",
+        "got": "general",
+        "hit": false
+      },
+      {
+        "phrase": "what's running right now",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "knock up a file called draft.txt",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "start a new file named memo.txt",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "put together a file called plan.txt",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "dig up any file called receipt",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "hunt for files named proposal",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "track down my file called ledger",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "is there a file named agenda",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "what have i got in this folder",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "give me a directory listing",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "show me what's in here",
+        "want": "file",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "sort my downloads into folders",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "put my desktop in order",
+        "want": "file",
+        "got": "general",
+        "hit": false
+      },
+      {
+        "phrase": "get my downloads under control",
+        "want": "file",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "put a task on my list called order stock",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "remind me to do the quarterly review as a task",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "stick a task on there called chase invoice",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "what have i got to do",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "run through my outstanding tasks",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "give me my to-do list",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "tick off the task called chase invoice",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "close out the task named prepare slides",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "put ravi on the team",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "bring maya into the team",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "sign up dev to the roster",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "who have i got working on this",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "run through the team",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "put together a write-up on supply chain risk",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "produce a document covering hiring plans",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "draft me something on competitor analysis",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "build me a spreadsheet from my task list",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "get my tasks into a spreadsheet",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "snap the screen for me",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "capture what's displayed",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "get me a picture of the screen",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "read out what's written on screen",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "pull the text off my display",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "what does the screen say",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "fire up notepad",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "get chrome going",
+        "want": "system",
+        "got": "general",
+        "hit": false
+      },
+      {
+        "phrase": "boot up the calculator",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "pull up the file called ledger.xlsx",
+        "want": "general",
+        "got": "file",
+        "hit": false
+      },
+      {
+        "phrase": "let me see notes.txt",
+        "want": "general",
+        "got": "file",
+        "hit": false
+      },
+      {
+        "phrase": "what have i been running",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "recap my recent commands",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "what are you actually capable of",
+        "want": "general",
+        "got": "conversation",
+        "hit": false
+      },
+      {
+        "phrase": "which llm is behind you",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "whereabouts do you live on disk",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "how's my wifi doing",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "am i online",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "give me a productivity summary",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "how am i doing on output",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      }
+    ]
+  },
+  "after": {
+    "correct": 43,
+    "total": 65,
+    "accuracy": 0.662,
+    "unknown": 16,
+    "rows": [
+      {
+        "phrase": "how's my computer holding up",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "run a health check on this machine",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "tell me about this pc",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "is everything running okay",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "give me the rundown on this box",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "am i running out of storage",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "how much room is left on this thing",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "show me the partitions",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "is my disk nearly full",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "what's my free capacity",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "what's eating my ram",
+        "want": "system",
+        "got": "general",
+        "hit": false
+      },
+      {
+        "phrase": "show me what's chewing cpu",
+        "want": "system",
+        "got": "general",
+        "hit": false
+      },
+      {
+        "phrase": "which program is slowing things down",
+        "want": "system",
+        "got": "general",
+        "hit": false
+      },
+      {
+        "phrase": "what's running right now",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "knock up a file called draft.txt",
+        "want": "file",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "start a new file named memo.txt",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "put together a file called plan.txt",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "dig up any file called receipt",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "hunt for files named proposal",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "track down my file called ledger",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "is there a file named agenda",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "what have i got in this folder",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "give me a directory listing",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "show me what's in here",
+        "want": "file",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "sort my downloads into folders",
+        "want": "file",
+        "got": "file",
+        "hit": true
+      },
+      {
+        "phrase": "put my desktop in order",
+        "want": "file",
+        "got": "general",
+        "hit": false
+      },
+      {
+        "phrase": "get my downloads under control",
+        "want": "file",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "put a task on my list called order stock",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "remind me to do the quarterly review as a task",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "stick a task on there called chase invoice",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "what have i got to do",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "run through my outstanding tasks",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "give me my to-do list",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "tick off the task called chase invoice",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "close out the task named prepare slides",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "put ravi on the team",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "bring maya into the team",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "sign up dev to the roster",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "who have i got working on this",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "run through the team",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "put together a write-up on supply chain risk",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "produce a document covering hiring plans",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "draft me something on competitor analysis",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "build me a spreadsheet from my task list",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "get my tasks into a spreadsheet",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "snap the screen for me",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "capture what's displayed",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "get me a picture of the screen",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "read out what's written on screen",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "pull the text off my display",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "what does the screen say",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "fire up notepad",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "get chrome going",
+        "want": "system",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "boot up the calculator",
+        "want": "system",
+        "got": "system",
+        "hit": true
+      },
+      {
+        "phrase": "pull up the file called ledger.xlsx",
+        "want": "general",
+        "got": "file",
+        "hit": false
+      },
+      {
+        "phrase": "let me see notes.txt",
+        "want": "general",
+        "got": "file",
+        "hit": false
+      },
+      {
+        "phrase": "what have i been running",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "recap my recent commands",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "what are you actually capable of",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "which llm is behind you",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "whereabouts do you live on disk",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "how's my wifi doing",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "am i online",
+        "want": "general",
+        "got": "unknown",
+        "hit": false
+      },
+      {
+        "phrase": "give me a productivity summary",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      },
+      {
+        "phrase": "how am i doing on output",
+        "want": "general",
+        "got": "general",
+        "hit": true
+      }
+    ]
+  },
+  "delta": 0.016,
+  "fit_metrics": {
+    "train_examples": 405,
+    "eval_examples": 102,
+    "accuracy": 0.863,
+    "precision": 0.916,
+    "recall": 0.751,
+    "f1": 0.825,
+    "avg_confidence": 0.945,
+    "loss": 0.0641,
+    "best_loss": 0.0641,
+    "epochs_trained": 200,
+    "min_confidence": 0.82,
+    "learning_rate": 0.01,
+    "early_stopping_patience": 20
+  }
+}

@@ -42,3 +42,9 @@ models/*.pt
 models/*.pth
 models/*.gguf
 models/*.safetensors
+disk_report.txt
+notes.txt
+task_count.txt
+cpu_summary.txt
+chain_a.txt
+team_size*

@@ -10,6 +10,10 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 from loguru import logger
 
+from core.config import load_config, data_dir
+
+from core.atomic_io import write_json_atomic
+
 
 class BusinessProcessAutomation:
     """
@@ -24,10 +28,9 @@ class BusinessProcessAutomation:
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize business process automation system."""
         
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = json.load(f)
-        
-        self.integrations_path = Path("data/business_integrations")
+        self.config = load_config(config_path)
+        # Project-relative, not cwd-relative (audit M-5).
+        self.integrations_path = data_dir(config_path) / "business_integrations"
         self.integrations_path.mkdir(parents=True, exist_ok=True)
         
         self.workflows = self._load_workflows()
@@ -58,12 +61,21 @@ class BusinessProcessAutomation:
                 logger.warning("Failed to load business rules: {}", str(e))
         return []
 
+    # Kept in memory only, so an uncapped list grows for the whole process
+    # lifetime and is then lost on restart - the worst of both (audit L-2).
+    # Matches system_agent.command_history, which was already capped at 200.
+    PROCESS_LOG_LIMIT = 500
+
+    def _trim_process_logs(self):
+        """Keep the in-memory execution log bounded."""
+        if len(self.process_logs) > self.PROCESS_LOG_LIMIT:
+            self.process_logs = self.process_logs[-self.PROCESS_LOG_LIMIT:]
+
     def _save_workflows(self):
         """Save workflows to storage."""
         try:
             workflows_path = self.integrations_path / "workflows.json"
-            with open(workflows_path, "w", encoding="utf-8") as f:
-                json.dump(self.workflows, f, indent=2)
+            write_json_atomic(workflows_path, self.workflows)
         except Exception as e:
             logger.error("Failed to save workflows: {}", str(e))
 
@@ -71,8 +83,7 @@ class BusinessProcessAutomation:
         """Save business rules to storage."""
         try:
             rules_path = self.integrations_path / "business_rules.json"
-            with open(rules_path, "w", encoding="utf-8") as f:
-                json.dump(self.business_rules, f, indent=2)
+            write_json_atomic(rules_path, self.business_rules)
         except Exception as e:
             logger.error("Failed to save business rules: {}", str(e))
 
@@ -100,8 +111,7 @@ class BusinessProcessAutomation:
         # Store integration
         integrations_path = self.integrations_path / f"{system_name}_integration.json"
         try:
-            with open(integrations_path, "w", encoding="utf-8") as f:
-                json.dump(integration, f, indent=2)
+            write_json_atomic(integrations_path, integration)
         except Exception as e:
             return {
                 "success": False,
@@ -138,8 +148,7 @@ class BusinessProcessAutomation:
         # Store integration
         integrations_path = self.integrations_path / f"{system_name}_integration.json"
         try:
-            with open(integrations_path, "w", encoding="utf-8") as f:
-                json.dump(integration, f, indent=2)
+            write_json_atomic(integrations_path, integration)
         except Exception as e:
             return {
                 "success": False,
@@ -172,27 +181,22 @@ class BusinessProcessAutomation:
             with open(integration_path, "r", encoding="utf-8") as f:
                 integration = json.load(f)
             
-            # In production, this would make actual API calls
-            # For now, simulate the sync
-            sync_result = {
-                "sync_id": str(uuid.uuid4()),
+            # No HTTP client, no credentials flow, and no connected system
+            # exist here - nothing is transferred. This previously reported
+            # status "completed" and "Successfully synced", which is a claim
+            # about the outside world that was never true. Report honestly
+            # instead: the integration record exists, the sync does not.
+            endpoint = integration.get("api_endpoint") or "(no endpoint configured)"
+            return {
+                "success": False,
+                "not_implemented": True,
                 "system_name": system_name,
                 "data_type": data_type,
-                "records_synced": 0,
-                "sync_time": datetime.now().isoformat(),
-                "status": "completed",
-                "message": f"Sync with {system_name} completed for {data_type}"
-            }
-            
-            # Update last sync time
-            integration["last_sync"] = sync_result["sync_time"]
-            with open(integration_path, "w", encoding="utf-8") as f:
-                json.dump(integration, f, indent=2)
-            
-            return {
-                "success": True,
-                "sync_result": sync_result,
-                "message": f"Successfully synced {data_type} with {system_name}"
+                "error": (
+                    f"No data was synced. The ERP integration record for '{system_name}' "
+                    f"is stored ({endpoint}), but this build has no connector that can "
+                    "actually call it - nothing was transferred in either direction."
+                ),
             }
             
         except Exception as e:
@@ -234,8 +238,7 @@ class BusinessProcessAutomation:
             
             # Update last sync time
             integration["last_sync"] = sync_result["sync_time"]
-            with open(integration_path, "w", encoding="utf-8") as f:
-                json.dump(integration, f, indent=2)
+            write_json_atomic(integration_path, integration)
             
             return {
                 "success": True,
@@ -335,6 +338,7 @@ class BusinessProcessAutomation:
                 "results": execution_results,
                 "success": True
             })
+            self._trim_process_logs()
             
             return {
                 "success": True,
@@ -678,11 +682,33 @@ class BusinessProcessAutomation:
             }
 
     def _calculate_avg_execution_time(self, logs: List[Dict[str, Any]]) -> float:
-        """Calculate average execution time from logs."""
-        
+        """Average execution time in seconds, computed from log timestamps.
+
+        Previously returned a flat 5.0 regardless of input - a made-up
+        number presented as a measurement.
+        """
         if not logs:
             return 0.0
-        
-        # In production, this would calculate from actual timestamps
-        # For now, return a placeholder
-        return 5.0
+
+        durations = []
+        for entry in logs:
+            if not isinstance(entry, dict):
+                continue
+            # Prefer an explicit duration if the log carries one.
+            for key in ("duration_seconds", "elapsed_seconds", "duration"):
+                value = entry.get(key)
+                if isinstance(value, (int, float)):
+                    durations.append(float(value))
+                    break
+            else:
+                start, end = entry.get("started_at"), entry.get("finished_at")
+                if start and end:
+                    try:
+                        delta = datetime.fromisoformat(str(end)) - datetime.fromisoformat(str(start))
+                        durations.append(delta.total_seconds())
+                    except (ValueError, TypeError):
+                        continue
+
+        if not durations:
+            return 0.0  # honest: no timing information in these logs
+        return round(sum(durations) / len(durations), 3)

@@ -5,9 +5,13 @@ Makes final calls when council members disagree or for critical tasks
 
 import asyncio
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 from ollama import AsyncClient
 from loguru import logger
+
+from core.council import MODEL_FALLBACKS
+
+from core.config import load_config
 
 
 class Chairman:
@@ -21,21 +25,56 @@ class Chairman:
     def __init__(self, config_path: str = "./config/settings.json"):
         """Initialize Chairman with configuration"""
         
-        with open(config_path, 'r') as f:
-            self.config = json.load(f)
-        
+        self.config = load_config(config_path)
         ollama_config = self.config.get('ollama', {})
         self.ollama = AsyncClient(host=ollama_config.get('host', 'http://127.0.0.1:11434'))
         self.ollama_timeout = float(ollama_config.get('timeout', 120))
         self.keep_alive = str(ollama_config.get('keep_alive', '5m'))
+        self.fallback_chain = list(ollama_config.get('fallback_chain', ['gemma2:2b', 'tinyllama:latest']))
         num_gpu = ollama_config.get('num_gpu')
-        self.base_options = {"num_ctx": 2048}
+        self.base_options = {"num_ctx": 4096}
         if num_gpu is not None:
             self.base_options["num_gpu"] = int(num_gpu)
         self.model = self.config['llm_council']['chairman']['model']
         self.temperature = self.config['llm_council']['chairman']['temperature']
-        
+
         logger.info("Chairman initialized with model: {}", self.model)
+
+    async def _generate_with_fallbacks(
+        self, prompt: str, num_predict: int, options: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Dict[str, Any], str]:
+        """Try the chairman's model first, then walk the fallback chain on failure.
+
+        Mirrors LLMCouncil._generate_with_fallbacks - without this, a single
+        model hiccup failed the safety-critical validate_plan call closed
+        with no retry, unlike every other model call in the system.
+        """
+        candidates = [self.model]
+        for candidate in self.fallback_chain + MODEL_FALLBACKS.get(self.model, []):
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        merged_options = {**self.base_options, "temperature": self.temperature, "num_predict": num_predict}
+        if options:
+            merged_options.update(options)
+
+        last_error: Optional[Exception] = None
+        for candidate in candidates:
+            try:
+                response = await asyncio.wait_for(
+                    self.ollama.generate(
+                        model=candidate,
+                        prompt=prompt,
+                        options=merged_options,
+                        keep_alive=self.keep_alive,
+                    ),
+                    timeout=self.ollama_timeout,
+                )
+                return response, candidate
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Chairman model {} failed: {} - falling back", candidate, str(exc))
+        raise last_error or RuntimeError("No model available for Chairman")
     
     async def make_final_decision(
         self, 
@@ -60,24 +99,13 @@ class Chairman:
         prompt = self._build_decision_prompt(task, council_opinions, context)
         
         try:
-            response = await asyncio.wait_for(
-                self.ollama.generate(
-                    model=self.model,
-                    prompt=prompt,
-                    options={
-                        **self.base_options,
-                        "temperature": self.temperature,
-                        "num_predict": 2000,
-                    },
-                    keep_alive=self.keep_alive
-                ),
-                timeout=self.ollama_timeout,
-            )
-            
+            response, used_model = await self._generate_with_fallbacks(prompt, num_predict=2000)
+
             decision = self._parse_response(response['response'])
             decision['authority'] = 'chairman'
             decision['final'] = True
-            
+            decision['model'] = used_model
+
             logger.success("Chairman decision rendered")
             return decision
             
@@ -132,23 +160,12 @@ Provide resolution in JSON:
 Respond ONLY with JSON."""
 
         try:
-            response = await asyncio.wait_for(
-                self.ollama.generate(
-                    model=self.model,
-                    prompt=prompt,
-                    options={
-                        **self.base_options,
-                        "temperature": self.temperature,
-                        "num_predict": 2000,
-                    },
-                    keep_alive=self.keep_alive
-                ),
-                timeout=self.ollama_timeout,
-            )
+            response, used_model = await self._generate_with_fallbacks(prompt, num_predict=2000)
 
             resolution = self._parse_response(response['response'])
             resolution['authority'] = 'chairman'
             resolution['resolution_type'] = 'conflict_resolution'
+            resolution['model'] = used_model
 
             logger.success("Chairman conflict resolution rendered")
             return resolution
@@ -195,23 +212,21 @@ Respond ONLY with JSON:
 }}"""
 
         try:
-            response = await asyncio.wait_for(
-                self.ollama.generate(
-                    model=self.model,
-                    prompt=prompt,
-                    options={
-                        **self.base_options,
-                        "temperature": self.temperature,
-                        "num_predict": 1500,
-                    },
-                    keep_alive=self.keep_alive
-                ),
-                timeout=self.ollama_timeout,
-            )
+            # A verdict is short JSON, not prose - keep num_predict well below
+            # num_ctx so the plan being reviewed always has room in the prompt.
+            response, used_model = await self._generate_with_fallbacks(prompt, num_predict=500)
 
             validation = self._parse_response(response['response'])
-            validation.setdefault("approved", False)
+            # Coerce to a real bool BEFORE anyone reads it. Callers test
+            # `if validation.get("approved"):` - and a model that emits the
+            # JSON string "false" instead of the boolean false produced a
+            # non-empty string, which is truthy in Python, so a rejected
+            # destructive plan was approved. Small local models emit quoted
+            # booleans routinely. Anything not explicitly affirmative is
+            # treated as a refusal.
+            validation["approved"] = self._is_affirmative(validation.get("approved"))
             validation['authority'] = 'chairman'
+            validation['model'] = used_model
 
             if validation.get("approved"):
                 logger.success("Plan approved by Chairman")
@@ -271,6 +286,23 @@ Provide your FINAL decision in JSON:
 
 Respond ONLY with JSON."""
     
+    @staticmethod
+    def _is_affirmative(value: Any) -> bool:
+        """Strict, fail-closed reading of an approval verdict.
+
+        Only an actual boolean True, or an unambiguous affirmative word,
+        counts as approval. Every other shape - the string "false", "no",
+        "reject", None, a number, a dict, a missing key - is a refusal.
+        This is deliberately asymmetric: the cost of wrongly refusing is one
+        extra confirmation prompt, the cost of wrongly approving is an
+        irreversible action on the user's machine.
+        """
+        if value is True:
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "yes", "approve", "approved", "y"}
+        return False
+
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
         """Parse JSON from LLM response"""
         
@@ -285,7 +317,11 @@ Respond ONLY with JSON."""
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
-            return {"raw_response": cleaned, "parse_error": "JSON decode failed"}
+            # "error" must be present, not just "parse_error" - callers check
+            # `if "error" in plan` to detect a failed decision; without this
+            # key, malformed model output was silently treated as a valid
+            # (empty) plan and executed instead of being caught as a failure.
+            return {"raw_response": cleaned, "parse_error": "JSON decode failed", "error": "JSON decode failed"}
     
     def _emergency_fallback(self, opinions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Emergency fallback when chairman fails"""

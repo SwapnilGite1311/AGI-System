@@ -13,6 +13,9 @@ import re
 
 from loguru import logger
 
+from core.atomic_io import write_json_atomic
+from core.config import load_config
+
 
 class BusinessAgent:
     """
@@ -31,18 +34,22 @@ class BusinessAgent:
         # fork depending on the directory ASC was launched from.
         self.project_root = Path(config_path).resolve().parent.parent
 
-        with open(config_path, "r", encoding="utf-8") as file:
-            self.config = json.load(file)
+        self.config_path = Path(config_path).resolve()
+        self.config = load_config(config_path)
+        # Merge secrets from gitignored credentials files so settings.json
+        # stays shareable while email/calendar still work.
+        # load_credentials transparently decrypts OS-protected values and
+        # upgrades any remaining plaintext in place on first read, so an
+        # existing install migrates without user action.
+        for section, filename in self.CREDENTIAL_FILES.items():
+            try:
+                from core.secrets import load_credentials
 
-        # Merge secrets from gitignored credentials file so settings.json
-        # stays shareable while email still works.
-        try:
-            creds_path = self.project_root / "data" / "email_credentials.json"
-            if creds_path.exists():
-                creds = json.loads(creds_path.read_text(encoding="utf-8"))
-                self.config.setdefault("email", {}).update(creds)
-        except Exception as exc:
-            logger.warning("Email credentials merge skipped: {}", str(exc))
+                creds = load_credentials(self._data_file(filename))
+                if creds:
+                    self.config.setdefault(section, {}).update(creds)
+            except Exception as exc:
+                logger.warning("{} credentials merge skipped: {}", section, str(exc))
 
         self.data_path = self._data_file("business_tasks.json")
         self.data_path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,8 +61,68 @@ class BusinessAgent:
         logger.info("Business Agent initialized")
 
     def _data_file(self, filename: str) -> Path:
-        """Resolve a file inside <project_root>/data/ regardless of cwd."""
-        return self.project_root / "data" / filename
+        """Resolve a data file, honouring the CONFIGURED data directory.
+
+        This hardcoded <project_root>/data and ignored paths.data entirely,
+        so pointing the config elsewhere had no effect. The test suite then
+        wrote tasks, projects, team members and reminders straight into the
+        user's live data - which is where the 1,026 tasks with 27 distinct
+        titles came from, and why a "Test Reminder" kept interrupting real
+        sessions an hour after every test run.
+        """
+        configured = (self.config.get("paths", {}) or {}).get("data", "./data")
+        base = Path(configured)
+        if not base.is_absolute():
+            base = self.project_root / configured
+        base.mkdir(parents=True, exist_ok=True)
+        return base / filename
+
+    # Config sections whose secrets live in a gitignored credentials file
+    # instead of settings.json. settings.json is tracked by git, so a secret
+    # written there is a secret committed to the repository (audit H-1).
+    CREDENTIAL_FILES = {
+        "email": "email_credentials.json",
+        "google_calendar": "google_credentials.json",
+    }
+
+    def _persist_config_section(
+        self,
+        section: str,
+        values: Dict[str, Any],
+        secret_keys: tuple = (),
+    ) -> None:
+        """Save a config section, keeping secrets out of settings.json.
+
+        Secrets go to <project_root>/data/<section>_credentials.json, encrypted
+        at rest by the OS keystore; everything else goes to settings.json,
+        written atomically. Previously both halves were written straight into
+        settings.json in clear text - a tracked file - which put a live Gmail
+        app password and a Google API key into version control (audit H-1),
+        and did it with a truncate-then-write that could destroy the config
+        outright if interrupted (audit H-3).
+        """
+        secrets_part = {k: v for k, v in values.items() if k in secret_keys and v}
+        public_part = {k: v for k, v in values.items() if k not in secret_keys}
+
+        # In-memory config keeps everything so the running session works.
+        self.config[section] = dict(values)
+
+        if secrets_part:
+            try:
+                from core.secrets import save_credentials
+
+                filename = self.CREDENTIAL_FILES.get(section, f"{section}_credentials.json")
+                save_credentials(self._data_file(filename), secrets_part)
+            except Exception as exc:
+                logger.error("Could not store {} secrets securely: {}", section, str(exc))
+                raise
+
+        try:
+            settings = load_config(str(self.config_path))
+            settings[section] = public_part
+            write_json_atomic(self.config_path, settings)
+        except Exception as exc:
+            logger.warning("Could not save {} configuration: {}", section, str(exc))
 
     def _load_tasks(self) -> List[Dict[str, Any]]:
         """Load business tasks from storage."""
@@ -97,8 +164,7 @@ class BusinessAgent:
                 "tasks": self.tasks,
                 "updated_at": datetime.now().isoformat()
             }
-            with open(self.data_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            write_json_atomic(self.data_path, data)
         except Exception as e:
             logger.error("Failed to save tasks: {}", str(e))
 
@@ -106,8 +172,7 @@ class BusinessAgent:
         """Save projects to storage."""
         try:
             projects_path = self._data_file("projects.json")
-            with open(projects_path, "w", encoding="utf-8") as f:
-                json.dump(self.projects, f, indent=2)
+            write_json_atomic(projects_path, self.projects)
         except Exception as e:
             logger.error("Failed to save projects: {}", str(e))
 
@@ -115,8 +180,7 @@ class BusinessAgent:
         """Save schedules to storage."""
         try:
             schedules_path = self._data_file("schedules.json")
-            with open(schedules_path, "w", encoding="utf-8") as f:
-                json.dump(self.schedules, f, indent=2)
+            write_json_atomic(schedules_path, self.schedules)
         except Exception as e:
             logger.error("Failed to save schedules: {}", str(e))
 
@@ -181,6 +245,134 @@ class BusinessAgent:
             "success": True,
             "tasks": filtered_tasks,
             "total": len(filtered_tasks)
+        }
+
+    def delete_task(
+        self,
+        title: Optional[str] = None,
+        task_id: Optional[str] = None,
+        delete_all: bool = False,
+    ) -> Dict[str, Any]:
+        """Delete tasks by title, by id, or all of them.
+
+        Title matching is case-insensitive and accepts a substring so the
+        user does not have to reproduce the stored title exactly. An
+        ambiguous title is reported back rather than guessed at - deleting
+        the wrong record silently is worse than asking.
+        """
+        if not self.tasks:
+            return {"success": True, "deleted": 0, "message": "There were no tasks to delete."}
+
+        if delete_all:
+            count = len(self.tasks)
+            removed = [t.get("title", "untitled") for t in self.tasks]
+            self.tasks = []
+            self._save_tasks()
+            return {
+                "success": True,
+                "deleted": count,
+                "deleted_titles": removed,
+                "message": f"Deleted all {count} task{'s' if count != 1 else ''}.",
+            }
+
+        if task_id:
+            matches = [t for t in self.tasks if t.get("id") == task_id]
+        elif title:
+            needle = title.strip().lower()
+            matches = [t for t in self.tasks
+                       if needle == (t.get("title") or "").strip().lower()]
+            if not matches:
+                matches = [t for t in self.tasks
+                           if needle in (t.get("title") or "").lower()]
+        else:
+            return {"success": False, "error": "Tell me which task to delete."}
+
+        if not matches:
+            available = [t.get("title", "untitled") for t in self.tasks[:8]]
+            return {
+                "success": False,
+                "error": f"No task matches {title or task_id!r}.",
+                "available_tasks": available,
+            }
+
+        if len(matches) > 1 and not task_id:
+            return {
+                "success": False,
+                "error": f"{len(matches)} tasks match {title!r}. Be more specific.",
+                "matches": [t.get("title") for t in matches],
+            }
+
+        target = matches[0]
+        self.tasks = [t for t in self.tasks if t.get("id") != target.get("id")]
+        self._save_tasks()
+        return {
+            "success": True,
+            "deleted": 1,
+            "task": target.get("title"),
+            "message": f"Deleted task: {target.get('title')}",
+        }
+
+    def remove_team_member(
+        self,
+        name: Optional[str] = None,
+        member_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Remove someone from the team roster.
+
+        Matched by name the way a person would say it, since nobody
+        refers to a colleague by UUID.
+        """
+        team_path = self._data_file("team_members.json")
+        try:
+            if team_path.exists():
+                with open(team_path, "r", encoding="utf-8") as f:
+                    team_members = json.load(f)
+            else:
+                team_members = []
+        except Exception as e:
+            return {"success": False, "error": f"Failed to load team members: {str(e)}"}
+
+        if not team_members:
+            return {"success": False, "error": "There is nobody on the team yet."}
+
+        if member_id:
+            matches = [m for m in team_members if m.get("id") == member_id]
+        elif name:
+            needle = name.strip().lower()
+            matches = [m for m in team_members
+                       if needle == (m.get("name") or "").strip().lower()]
+            if not matches:
+                matches = [m for m in team_members
+                           if needle in (m.get("name") or "").lower()]
+        else:
+            return {"success": False, "error": "Tell me who to remove."}
+
+        if not matches:
+            return {
+                "success": False,
+                "error": f"Nobody on the team is named {name or member_id!r}.",
+                "team": [m.get("name") for m in team_members],
+            }
+        if len(matches) > 1 and not member_id:
+            return {
+                "success": False,
+                "error": f"{len(matches)} team members match {name!r}. Be more specific.",
+                "matches": [m.get("name") for m in matches],
+            }
+
+        target = matches[0]
+        remaining = [m for m in team_members if m.get("id") != target.get("id")]
+        try:
+            write_json_atomic(team_path, remaining)
+        except Exception as e:
+            return {"success": False, "error": f"Failed to save team: {str(e)}"}
+
+        return {
+            "success": True,
+            "removed": target.get("name"),
+            "role": target.get("role"),
+            "remaining": len(remaining),
+            "message": f"Removed {target.get('name')} from the team.",
         }
 
     def update_task_status(
@@ -640,26 +832,16 @@ class BusinessAgent:
                     "message": "Google Calendar integration requires the requests library"
                 }
             
-            # Store configuration
             google_config = {
                 "configured": True,
                 "api_key": api_key,
                 "calendar_id": calendar_id,
                 "configured_at": datetime.now().isoformat()
             }
-            
-            # Update config
-            self.config["google_calendar"] = google_config
-            
-            # Save to file
-            try:
-                with open("./config/settings.json", "r", encoding="utf-8") as f:
-                    settings = json.load(f)
-                settings["google_calendar"] = google_config
-                with open("./config/settings.json", "w", encoding="utf-8") as f:
-                    json.dump(settings, f, indent=2)
-            except Exception as e:
-                logger.warning("Could not save Google Calendar configuration: {}", str(e))
+
+            # api_key is a secret: it goes to the gitignored credentials file,
+            # never into the tracked settings.json.
+            self._persist_config_section("google_calendar", google_config, secret_keys=("api_key",))
             
             return {
                 "success": True,
@@ -972,8 +1154,22 @@ class BusinessAgent:
             server = smtplib.SMTP(smtp_server, smtp_port)
             server.starttls()
             server.login(email_address, password)
-            server.send_message(msg)
+            # send_message RETURNS the recipients the server refused. That
+            # return value was discarded, so an address the server rejected
+            # outright was still reported as "Email sent successfully".
+            refused = server.send_message(msg)
             server.quit()
+
+            if refused:
+                rejected = ", ".join(sorted(refused))
+                logger.error("SMTP refused recipient(s): {}", rejected)
+                return {
+                    "success": False,
+                    "error": f"The mail server refused: {rejected}",
+                    "refused": {k: str(v) for k, v in refused.items()},
+                    "to": to_email,
+                    "subject": subject,
+                }
             
             # Log the communication
             self.create_communication_log(
@@ -988,7 +1184,10 @@ class BusinessAgent:
                 "message": f"Email sent successfully to {to_email}",
                 "to": to_email,
                 "subject": subject,
-                "sent_at": datetime.now().isoformat()
+                "sent_at": datetime.now().isoformat(),
+                # The server accepted it for every recipient. That is as far
+                # as SMTP can confirm - delivery is not observable from here.
+                "accepted_by_server": True,
             }
             
         except Exception as e:
@@ -1034,29 +1233,20 @@ class BusinessAgent:
                               "Please check your settings and try again."
                 }
             
-            # Store configuration (encrypted in production)
             email_config = {
                 "configured": True,
                 "smtp_server": smtp_server,
                 "smtp_port": smtp_port,
                 "email_address": email_address,
-                "password": password,  # In production, this should be encrypted
+                "password": password,
                 "use_tls": use_tls,
                 "configured_at": datetime.now().isoformat()
             }
-            
-            # Update config
-            self.config["email"] = email_config
-            
-            # Save to file (in production, use secure storage)
-            try:
-                with open("./config/settings.json", "r", encoding="utf-8") as f:
-                    settings = json.load(f)
-                settings["email"] = email_config
-                with open("./config/settings.json", "w", encoding="utf-8") as f:
-                    json.dump(settings, f, indent=2)
-            except Exception as e:
-                logger.warning("Could not save email configuration: {}", str(e))
+
+            # The password is split out into the gitignored credentials file
+            # and encrypted by the OS keystore; only the non-secret fields
+            # reach settings.json.
+            self._persist_config_section("email", email_config, secret_keys=("password",))
             
             return {
                 "success": True,
@@ -1207,8 +1397,7 @@ ASC"""
             
             logs.append(log_entry)
             
-            with open(comm_log_path, "w", encoding="utf-8") as f:
-                json.dump(logs, f, indent=2)
+            write_json_atomic(comm_log_path, logs)
             
             return {
                 "success": True,
@@ -2355,12 +2544,27 @@ ASC"""
             logger.warning("Failed to load team members: {}", str(e))
             team_members = []
         
-        # Check if team member already exists
+        # Check if team member already exists.
+        # Email is the identity ONLY when there is one. Matching on a
+        # missing email made every member added by name alone collide with
+        # the first: "add priya to the team" failed with "Team member with
+        # email None already exists".
         for member in team_members:
-            if member["email"] == email:
+            if email:
+                duplicate = member.get("email") == email
+            else:
+                duplicate = (
+                    not member.get("email")
+                    and (member.get("name") or "").strip().lower()
+                    == (name or "").strip().lower()
+                )
+            if duplicate:
                 return {
                     "success": False,
-                    "error": f"Team member with email {email} already exists"
+                    "error": (
+                        f"Team member with email {email} already exists"
+                        if email else f"{name} is already on the team"
+                    )
                 }
         
         # Create new team member
@@ -2380,8 +2584,7 @@ ASC"""
         
         # Save team members
         try:
-            with open(team_path, "w", encoding="utf-8") as f:
-                json.dump(team_members, f, indent=2)
+            write_json_atomic(team_path, team_members)
         except Exception as e:
             return {
                 "success": False,
@@ -2460,8 +2663,7 @@ ASC"""
         
         # Save both
         try:
-            with open(team_path, "w", encoding="utf-8") as f:
-                json.dump(team_members, f, indent=2)
+            write_json_atomic(team_path, team_members)
             self._save_projects()
         except Exception as e:
             return {"success": False, "error": f"Failed to save assignment: {str(e)}"}
@@ -2544,8 +2746,7 @@ ASC"""
         
         # Save notifications
         try:
-            with open(notifications_path, "w", encoding="utf-8") as f:
-                json.dump(notifications, f, indent=2)
+            write_json_atomic(notifications_path, notifications)
         except Exception as e:
             return {
                 "success": False,
@@ -2627,8 +2828,7 @@ ASC"""
         
         # Save notifications
         try:
-            with open(notifications_path, "w", encoding="utf-8") as f:
-                json.dump(notifications, f, indent=2)
+            write_json_atomic(notifications_path, notifications)
         except Exception as e:
             return {"success": False, "error": f"Failed to save notification: {str(e)}"}
         
@@ -2675,8 +2875,7 @@ ASC"""
         
         # Save workspaces
         try:
-            with open(workspaces_path, "w", encoding="utf-8") as f:
-                json.dump(workspaces, f, indent=2)
+            write_json_atomic(workspaces_path, workspaces)
         except Exception as e:
             return {
                 "success": False,

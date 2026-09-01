@@ -9,10 +9,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import pytesseract
+# pytesseract pulls in pandas - over a second of import - and OCR is not
+# needed to start the system. Resolved on first use instead.
+_pytesseract = None
+
+
+def _ocr():
+    """The pytesseract module, imported on first use."""
+    global _pytesseract
+    if _pytesseract is None:
+        import pytesseract as _module
+        _pytesseract = _module
+    return _pytesseract
+
 from PIL import Image, ImageGrab
 from loguru import logger
 from ollama import AsyncClient
+
+from core.config import load_config
 
 
 class VisionAgent:
@@ -25,24 +39,22 @@ class VisionAgent:
     """
 
     def __init__(self, config_path: str = "./config/settings.json"):
-        with open(config_path, "r", encoding="utf-8") as file:
-            self.config = json.load(file)
-
+        self.config = load_config(config_path)
         self.ollama = AsyncClient(host=self.config["ollama"]["host"])
         self.vision_model = self.config["llm_council"]["vision"]["model"]
 
         tesseract_path = self.config.get("vision", {}).get("tesseract_path")
         if tesseract_path:
-            pytesseract.pytesseract.tesseract_cmd = tesseract_path
+            _ocr().pytesseract.tesseract_cmd = tesseract_path
         else:
             located = shutil.which("tesseract")
             if located:
-                pytesseract.pytesseract.tesseract_cmd = located
+                _ocr().pytesseract.tesseract_cmd = located
             else:
                 # Last-resort default Windows install location.
                 default_windows_path = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
                 if default_windows_path.exists():
-                    pytesseract.pytesseract.tesseract_cmd = str(default_windows_path)
+                    _ocr().pytesseract.tesseract_cmd = str(default_windows_path)
 
         self.ocr_available = self._check_ocr_availability()
 
@@ -58,7 +70,7 @@ class VisionAgent:
         """Check whether Tesseract OCR is available."""
 
         try:
-            pytesseract.get_tesseract_version()
+            _ocr().get_tesseract_version()
             return True
         except Exception as exc:
             logger.warning("Tesseract OCR unavailable: {}", str(exc))
@@ -101,7 +113,7 @@ class VisionAgent:
             return ""
 
         try:
-            text = pytesseract.image_to_string(image)
+            text = _ocr().image_to_string(image)
             logger.debug("OCR extracted {} characters", len(text))
             return text.strip()
 
@@ -117,8 +129,8 @@ class VisionAgent:
             return None
 
         try:
-            import pytesseract
-            data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+            data = _ocr().image_to_data(
+                image, output_type=_ocr().Output.DICT)
             n_boxes = len(data['text'])
 
             target_words = [w.lower().strip(":,.-") for w in target_text.split() if w.strip(":,.-")]
@@ -184,6 +196,31 @@ class VisionAgent:
 
         except Exception as exc:
             logger.error("Vision understanding failed: {}", str(exc))
+
+            # llava:7b needs ~4.7 GB and this machine has 4 GB of VRAM, so
+            # the runner dies with GGML_ASSERT(buffer) failed and the whole
+            # feature returned an error. OCR reads the same screen using a
+            # fraction of the memory - degraded, but genuinely useful, and
+            # far better than telling the user the request failed.
+            try:
+                text = (self.extract_text_ocr() or "").strip()
+            except Exception:
+                text = ""
+
+            if text:
+                logger.info("Vision model unavailable; answered from OCR instead.")
+                return {
+                    "description": text[:4000],
+                    "source": "ocr_fallback",
+                    "degraded": True,
+                    "note": (
+                        "The image model would not fit in this GPU's memory, "
+                        "so this is the text read off the screen rather than a "
+                        "visual description."
+                    ),
+                    "timestamp": datetime.now().isoformat(),
+                }
+
             return {"error": str(exc)}
 
     async def find_ui_element(self, element_description: str) -> Dict[str, Any]:

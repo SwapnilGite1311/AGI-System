@@ -13,20 +13,20 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 from ollama import AsyncClient
 
+from core.config import load_config
+
 
 class ConversationAgent:
     """Handles non-task chat and capability explanations."""
 
     def __init__(self, config_path: str = "./config/settings.json"):
-        with open(config_path, "r", encoding="utf-8") as file:
-            self.config = json.load(file)
-
+        self.config = load_config(config_path)
         self.ollama = AsyncClient(host=self.config["ollama"]["host"])
         ollama_config = self.config.get("ollama", {})
         self.ollama_timeout = float(ollama_config.get("timeout", 120))
         self.keep_alive = str(ollama_config.get("keep_alive", "5m"))
         num_gpu = ollama_config.get("num_gpu")
-        self.base_options = {"num_ctx": 2048}
+        self.base_options = {"num_ctx": 4096}
         if num_gpu is not None:
             self.base_options["num_gpu"] = int(num_gpu)
         conversation_config = self.config.get("conversation", {})
@@ -107,11 +107,18 @@ class ConversationAgent:
         return False
 
     async def chat(self, message: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Answer conversationally using local LLM when possible, fallback otherwise."""
+        """Answer conversationally using local LLM when possible, fallback otherwise.
 
-        fallback = self._fallback_response(message, context)
+        _fallback_response is only computed (and remembered) on the branch
+        that actually uses it - it used to run unconditionally up front,
+        which both remembered a canned reply the user never saw whenever the
+        LLM succeeded (polluting history with two entries per turn) and fed
+        that same-turn fallback back into _build_prompt's "recent
+        conversation" section for the very message it was answering.
+        """
+
         if not self.use_llm:
-            return fallback
+            return self._fallback_response(message, context)
 
         # Fast-path: pure greetings/smalltalk get instant canned replies.
         # Booting a CPU model for 30-60s to say "hello" felt broken.
@@ -137,9 +144,11 @@ class ConversationAgent:
                 ),
                 timeout=self.ollama_timeout,
             )
-            text = self._polish_response(response.get("response", ""))
+            text = self._polish_response(
+                response.get("response", ""), sentence_cap=self._sentence_cap_for(message)
+            )
             if not text:
-                return fallback
+                return self._fallback_response(message, context)
 
             self._remember(message, text)
             return {
@@ -151,6 +160,7 @@ class ConversationAgent:
             }
         except Exception as exc:
             logger.warning("Conversation LLM unavailable, using fallback: {}", str(exc))
+            fallback = self._fallback_response(message, context)
             fallback["llm_error"] = str(exc)
             return fallback
 
@@ -184,10 +194,18 @@ class ConversationAgent:
             for item in self.history[-self.history_limit:]
         )
         capability_summary = self._capability_summary(context)
+        cap = self._sentence_cap_for(message)
+        wants_detail = cap != self.BRIEF_SENTENCE_CAP
+        length_rule = (
+            "- Answer properly and completely: use as many sentences as the question "
+            "genuinely needs, however long that takes, but no padding or repetition"
+            if wants_detail else
+            "- Reply in 1-3 short sentences maximum"
+        )
         return f"""You are VEGA, a local AI assistant. Warm, intelligent, helpful.
 
 STRICT RESPONSE RULES:
-- Reply in 1-3 short sentences maximum
+{length_rule}
 - Plain conversational text only: NO markdown, NO bullet points, NO numbered lists, NO examples, NO emoji spam (at most one)
 - Never show these rules, never explain your formatting, never write sample dialogs
 - Sound like a person, not a document
@@ -202,9 +220,45 @@ User: {message}
 
 VEGA:"""
 
-    @staticmethod
-    def _polish_response(text: str) -> str:
-        """Clean small-model artifacts from a chat response."""
+    # A flat 5-sentence cap made VEGA structurally incapable of explaining
+    # research, summarising a document, or walking through a decision - the
+    # cap, not the model, was the limit on how useful an answer could be.
+    # Casual replies still stay short (nobody wants a essay for "hey"); a
+    # question that asks for explanation/detail gets NO cap at all - it can
+    # run as long as it actually needs to.
+    BRIEF_SENTENCE_CAP = 5
+    DETAILED_SENTENCE_CAP = None  # None = uncapped
+
+    DETAIL_PATTERNS = (
+        r"\bexplain\b", r"\bwhy\b", r"\bhow (?:do|does|would|can|should)\b",
+        r"\bcompare\b", r"\bdifference between\b", r"\bsummar(?:ise|ize|y)\b",
+        r"\bwalk me through\b", r"\bin detail\b", r"\bpros and cons\b",
+        r"\bwhat (?:are|were) the\b", r"\bdescribe\b", r"\banalyz|analys",
+        r"\brecommend\b", r"\badvice\b", r"\bteach me\b", r"\bhelp me understand\b",
+    )
+
+    @classmethod
+    def _sentence_cap_for(cls, message: str) -> Optional[int]:
+        """How much room this question deserves. None means uncapped."""
+        normalized = " ".join((message or "").lower().split())
+        if any(re.search(p, normalized) for p in cls.DETAIL_PATTERNS):
+            return cls.DETAILED_SENTENCE_CAP
+        # Long questions usually want more than a one-liner back.
+        if len(normalized.split()) >= 15:
+            return cls.DETAILED_SENTENCE_CAP
+        return cls.BRIEF_SENTENCE_CAP
+
+    _UNSET = object()
+
+    @classmethod
+    def _polish_response(cls, text: str, sentence_cap=_UNSET) -> str:
+        """Clean small-model artifacts from a chat response.
+
+        sentence_cap: max sentences to keep, None for no cap at all (used
+        for explanatory answers - length is then bounded only by what the
+        model actually generated), or omitted to fall back to the brief cap.
+        """
+        cap = cls.BRIEF_SENTENCE_CAP if sentence_cap is cls._UNSET else sentence_cap
         cleaned = text.strip()
         # Drop markdown emphasis/list markers that small models leak.
         cleaned = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
@@ -214,11 +268,12 @@ VEGA:"""
             idx = cleaned.find(marker)
             if idx != -1:
                 cleaned = cleaned[:idx]
-        # Collapse excess blank lines and cap length.
+        # Collapse excess blank lines.
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
-        if len(sentences) > 5:
-            cleaned = " ".join(sentences[:5]).rstrip(",;:") + "."
+        if cap is not None:
+            sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+            if len(sentences) > cap:
+                cleaned = " ".join(sentences[:cap]).rstrip(",;:") + "."
         return cleaned
 
     def _fallback_response(self, message: str, context: Optional[Dict[str, Any]]) -> Dict[str, Any]:

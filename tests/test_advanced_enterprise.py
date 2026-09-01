@@ -185,23 +185,29 @@ class TestBusinessProcessAutomation:
         assert result["integration"]["system_name"] == "Salesforce"
         assert result["integration"]["system_type"] == "crm"
 
-    def test_sync_with_erp(self, business_process):
-        """Test ERP data synchronization."""
-        # First create integration
+    def test_sync_with_erp_reports_honestly_that_nothing_synced(self, business_process):
+        """No ERP connector exists, so sync must not claim to have run.
+
+        This previously asserted success is True against an implementation
+        that fabricated a completed sync ("records_synced": 0, status
+        "completed", "Successfully synced") without contacting anything -
+        the test was asserting the fabrication.
+        """
         business_process.create_erp_integration(
             system_name="SAP",
             api_endpoint="https://api.sap.com/v1",
             authentication={"api_key": "test_key"},
             sync_config={}
         )
-        
+
         result = business_process.sync_with_erp(
             system_name="SAP",
             data_type="inventory"
         )
-        
-        assert result["success"] is True
-        assert "sync_result" in result
+
+        assert result["success"] is False
+        assert result.get("not_implemented") is True
+        assert "no data was synced" in result["error"].lower()
 
     def test_create_business_workflow(self, business_process):
         """Test business workflow creation."""

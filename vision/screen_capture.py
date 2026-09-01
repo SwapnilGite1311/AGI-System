@@ -13,6 +13,8 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 
+from core.config import load_config
+
 try:
     from PIL import ImageGrab, Image
     PIL_AVAILABLE = True
@@ -24,9 +26,7 @@ class ScreenCaptureService:
     """Capture and persist screenshots of the primary display."""
 
     def __init__(self, config_path: str = "./config/settings.json"):
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = json.load(f)
-
+        self.config = load_config(config_path)
         self.screenshots_dir = (
             Path(self.config.get("paths", {}).get("data", "./data")) / "screenshots"
         )

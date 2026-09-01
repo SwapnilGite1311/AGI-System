@@ -88,7 +88,11 @@ class LLMIntentRouter:
             "model", (config.get("conversation") or {}).get("model", "qwen2.5:3b")
         )
         num_gpu = ollama_config_gpu(config)
-        options = {"num_ctx": 2048, "temperature": 0.2, "num_predict": 220}
+        # num_predict raised alongside num_ctx: 220 tokens truncated any
+        # multi-step plan mid-JSON, which _extract_json then failed to parse,
+        # silently falling back to the slower council path on exactly the
+        # compound commands the intent router exists to handle.
+        options = {"num_ctx": 4096, "temperature": 0.2, "num_predict": 500}
         if num_gpu is not None:
             options["num_gpu"] = num_gpu
         self.options = options
@@ -170,6 +174,12 @@ class LLMIntentRouter:
         confidence = float(decision.get("confidence", 0.5) or 0.0)
 
         # Models sometimes answer with the TOOL name instead of an action.
+        # Curated defaults first (these encode the most useful action for
+        # each tool, which is not always the first one listed), then the
+        # manifest as a general fallback so a newly registered tool is
+        # covered automatically. Relying on the curated map alone is what
+        # made "math_ops" an unknown action - every calculation became a
+        # clarify because the map was never extended when the tool was added.
         tool_default_action = {
             "file_ops": "search_files",
             "system_ops": "status",
@@ -179,6 +189,14 @@ class LLMIntentRouter:
         }
         if action in tool_default_action:
             action = tool_default_action[action]
+        elif action:
+            for tool in self.manifest_provider() or []:
+                if str(tool.get("name", "")).lower() != action:
+                    continue
+                tool_actions = tool.get("actions") or []
+                if tool_actions:
+                    action = str(tool_actions[0]).lower()
+                break
 
         return {"action": action, "params": params, "confidence": confidence}
 
@@ -221,8 +239,6 @@ class LLMIntentRouter:
                 "confidence": decision.get("confidence", 0.5),
             }
 
-        if confidence := decision.get("confidence", 0.5):
-            pass
         confidence_val = float(decision.get("confidence", 0.5) or 0.5)
         if confidence_val < 0.35 and action not in self.soft_actions:
             return {

@@ -33,11 +33,13 @@ def load_config():
     email_cfg = cfg.get("email", {})
     # Merge gitignored credentials (password lives outside tracked config).
     creds_path = ROOT / "data" / "email_credentials.json"
-    if creds_path.exists():
-        try:
-            email_cfg.update(json.loads(creds_path.read_text(encoding="utf-8")))
-        except Exception as exc:
-            print(f"[Email] credential merge failed: {exc}")
+    try:
+        from core.secrets import load_credentials
+
+        # Decrypts OS-protected secrets; upgrades leftover plaintext in place.
+        email_cfg.update(load_credentials(creds_path))
+    except Exception as exc:
+        print(f"[Email] credential merge failed: {exc}")
     if not email_cfg.get("configured") or not email_cfg.get("password"):
         print("[Email] Not configured - run setup_email.py first.")
         sys.exit(1)
@@ -67,18 +69,43 @@ def get_text_body(msg) -> str:
     return payload.decode(errors="replace") if payload else ""
 
 
+MAX_ENQUEUED_PER_POLL = 10
+
+
 def fetch_commands(cfg, queue: RemoteQueue):
-    """Check inbox for new command emails; enqueue valid ones."""
+    """Check inbox for new command emails; enqueue valid ones.
+
+    Safety rules (do not relax without re-reading the reasoning below):
+    - The subject MUST contain the literal command prefix. Without this,
+      any unread mail from an allowed sender - a newsletter, a receipt, a
+      calendar notification - would be executed as a command.
+    - Never enqueue a message from our own configured address. VEGA emails
+      task results back to the sender; if the sender is also an allowed
+      sender (the common single-user setup), that reply would otherwise be
+      picked back up as a new command on the next poll, and its own reply
+      would trigger another one - an unbounded self-sustaining loop.
+    - At most MAX_ENQUEUED_PER_POLL commands are queued per poll cycle, so a
+      burst of matching mail cannot flood the execution queue.
+    """
     mail = imaplib.IMAP4_SSL(cfg["imap"], cfg["port"])
     mail.login(cfg["address"], cfg["password"])
     mail.select("INBOX")
 
+    own_address = cfg["address"].strip().lower()
+    enqueued_this_poll = 0
+
     for sender in cfg["allowed"]:
+        if enqueued_this_poll >= MAX_ENQUEUED_PER_POLL:
+            break
         criteria = f'(UNSEEN FROM "{sender}")'
         status, data = mail.search(None, criteria)
         if status != "OK":
             continue
         for num in data[0].split():
+            if enqueued_this_poll >= MAX_ENQUEUED_PER_POLL:
+                print(f"[Email] Per-poll cap ({MAX_ENQUEUED_PER_POLL}) reached, deferring remaining mail to next poll.")
+                break
+
             _, msg_data = mail.fetch(num, "(RFC822)")
             msg = email.message_from_bytes(msg_data[0][1])
             subject = str(msg.get("Subject", "")).strip()
@@ -87,15 +114,22 @@ def fetch_commands(cfg, queue: RemoteQueue):
             if "<" in sender_addr:
                 sender_addr = sender_addr.split("<")[-1].rstrip(">")
 
+            if sender_addr.strip().lower() == own_address:
+                print(f"[Email] Skipped self-addressed message (loop guard): {subject[:60]}")
+                continue
+
+            if cfg["prefix"] not in subject.upper():
+                # No exception here: a body-only fallback means any unread
+                # mail becomes an executable command.
+                continue
+
             body = get_text_body(msg).strip()
-            if cfg["prefix"] in subject.upper():
-                command = subject.split(cfg["prefix"], 1)[1].strip() or body
-            else:
-                command = body[:500].strip()
+            command = subject.split(cfg["prefix"], 1)[1].strip() or body[:500].strip()
 
             if not command:
                 continue
             entry = queue.enqueue(command, source="email", sender=sender_addr)
+            enqueued_this_poll += 1
             print(f"[Email] Queued {entry['id']} from {sender_addr}: {command[:60]}")
 
     mail.logout()

@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 import webbrowser
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from difflib import SequenceMatcher
 import uuid
@@ -16,9 +17,14 @@ from urllib.parse import quote_plus, urlparse
 
 from loguru import logger
 
-from agents.learning_agent import LearningAgent
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # LearningAgent pulls in torch - keep it off startup
+    from agents.learning_agent import LearningAgent
 from agents.system_agent import SystemAgent
 from agents.vision_agent import VisionAgent
+
+from core.config import load_config
 
 
 class WebAgent:
@@ -36,16 +42,19 @@ class WebAgent:
         config_path: str = "./config/settings.json",
         system_agent: Optional[SystemAgent] = None,
         vision_agent: Optional[VisionAgent] = None,
-        learning_agent: Optional[LearningAgent] = None,
+        learning_agent: Optional["LearningAgent"] = None,
     ):
         """Initialize the web agent."""
 
-        with open(config_path, "r", encoding="utf-8") as file:
-            self.config = json.load(file)
-
+        self.config = load_config(config_path)
         self.system_agent = system_agent or SystemAgent(config_path)
         self.vision_agent = vision_agent or VisionAgent(config_path)
-        self.learning_agent = learning_agent or LearningAgent(config_path)
+        if learning_agent is None:
+            # Imported at point of use: this chain ends at torch, which
+            # costs seconds and is not needed to browse the web.
+            from agents.learning_agent import LearningAgent
+            learning_agent = LearningAgent(config_path)
+        self.learning_agent = learning_agent
 
         web_config = self.config.get("web_automation", {})
         self.default_browser = web_config.get("default_browser", "chrome")
@@ -60,6 +69,10 @@ class WebAgent:
         self.last_url: Optional[str] = None
         self.last_browser: Optional[str] = None
         self.selector_confidence_threshold = float(web_config.get("selector_confidence_threshold", 0.7))
+        # Vertical gap from an OCR-located label to its input, in pixels.
+        # A layout/DPI assumption, not a measurement - configurable so it
+        # can be corrected rather than hardcoded at a magic 45.
+        self.label_to_input_offset_px = int(web_config.get("label_to_input_offset_px", 45))
         self.verbose_logging = bool(web_config.get("verbose_logging", False))
 
         # Simple synonyms for label normalization
@@ -81,10 +94,16 @@ class WebAgent:
             try:
                 from agents.browser_driver import BrowserDriver
 
+                persistent_profile_dir = None
+                if web_config.get("persistent_profile", False):
+                    data_dir = self.config.get("paths", {}).get("data", "./data")
+                    persistent_profile_dir = str(Path(data_dir) / "browser_profile")
+
                 self.browser_driver = BrowserDriver(
                     headless=web_config.get("headless", True),
                     browser=web_config.get("driver_browser", "chromium"),
                     browsers_path=web_config.get("browsers_path"),
+                    persistent_profile_dir=persistent_profile_dir,
                 )
             except Exception as exc:
                 logger.warning("Playwright driver unavailable: {}", str(exc))
@@ -120,6 +139,39 @@ class WebAgent:
             result["navigated_url"] = target_url
             return result
 
+        # "fill this form for me <url>" - a form request carrying no values.
+        # Opening the page and reporting success was useless: nothing was
+        # filled and the user was not told why. Load it, read the field
+        # labels off the DOM, and ask for exactly what is missing.
+        if target_url and re.search(r"\bfill\b.*\bform\b|\bform\b.*\bfill\b", lowered):
+            navigation = await self.navigate_to_url(target_url)
+            if not navigation.get("success"):
+                return navigation
+            labels = await self._discover_form_labels()
+            if labels:
+                return {
+                    "success": False,
+                    "needs_input": True,
+                    "navigated_url": target_url,
+                    "detected_fields": labels,
+                    "message": (
+                        "I opened the page and found these fields: "
+                        + ", ".join(labels[:12])
+                        + ". Tell me what to put in them, e.g. "
+                        + f"\"{labels[0]}: your answer\"."
+                    ),
+                }
+            return {
+                "success": False,
+                "needs_input": True,
+                "navigated_url": target_url,
+                "message": (
+                    "I opened the page but could not read any form fields from it. "
+                    "Tell me the values like \"name: Swapnil, email: me@example.com\" "
+                    "and I will fill them in."
+                ),
+            }
+
         if target_url and search_match and "search" in lowered:
             query = search_match.group("query").strip()
             if query and target_url:
@@ -133,18 +185,69 @@ class WebAgent:
 
         return {"success": False, "error": "Could not understand web command", "command": command}
 
+    async def _discover_form_labels(self) -> list:
+        """Read the form's field labels from the live DOM.
+
+        Uses the driver's existing label discovery so the user can be told
+        what the page actually asks for instead of guessing.
+        """
+        if not self.browser_driver:
+            return []
+        try:
+            candidates = await self.browser_driver.find_label_candidates()
+        except Exception as exc:
+            logger.debug("Form label discovery failed: {}", str(exc)[:80])
+            return []
+
+        labels = []
+        for item in candidates or []:
+            text = ""
+            if isinstance(item, dict):
+                text = str(item.get("label") or item.get("text") or item.get("name") or "")
+            elif isinstance(item, str):
+                text = item
+            text = " ".join(text.split()).strip(" :*")
+            if text and text.lower() not in {l.lower() for l in labels}:
+                labels.append(text)
+        return labels[:20]
+
+    # Words that are sentence scaffolding, never field names.
+    _FIELD_STOPWORDS = frozenset({
+        "to", "for", "with", "form", "the", "a", "an", "at", "on", "in",
+        "and", "then", "please", "go", "fill", "out", "this", "that", "my",
+        "me", "using", "http", "https", "www", "url", "link", "page", "site",
+    })
+
     def _extract_inline_fields(self, command: str) -> Dict[str, str]:
-        """Extract simple name/value pairs from a form-fill command."""
+        """Extract simple name/value pairs from a form-fill command.
+
+        The URL used to be swallowed as a field: "https://example.com/apply"
+        matched the `key: value` pattern and produced
+        {"fill this form for me https": "//example.com/apply"}, which was
+        then typed into the page as if it were a real answer. Strip URLs
+        before parsing, and reject scaffolding words as field names.
+        """
         fields: Dict[str, str] = {}
-        quoted_pairs = re.findall(r"\b([A-Za-z][A-Za-z0-9 _-]{1,30})\s+['\"]([^'\"]+)['\"]", command)
+
+        # Remove URLs first so their scheme colon cannot look like a pair.
+        scrubbed = re.sub(r"https?://\S+|\bwww\.\S+", " ", command)
+
+        quoted_pairs = re.findall(
+            r"\b([A-Za-z][A-Za-z0-9 _-]{1,30})\s+['\"]([^'\"]+)['\"]", scrubbed
+        )
         for key, value in quoted_pairs:
             key_clean = key.strip().split()[-1].lower()
-            if key_clean not in {"to", "for", "with", "form"}:
+            if key_clean and key_clean not in self._FIELD_STOPWORDS:
                 fields[key_clean] = value.strip()
 
-        explicit_pairs = re.findall(r"([A-Za-z][A-Za-z0-9 _-]{1,30})\s*(?:=|:)\s*([^,;]+)", command)
+        explicit_pairs = re.findall(
+            r"([A-Za-z][A-Za-z0-9 _-]{1,30})\s*(?:=|:)\s*([^,;]+)", scrubbed
+        )
         for key, value in explicit_pairs:
-            fields[key.strip().lower()] = value.strip().strip("'\"")
+            key_clean = key.strip().split()[-1].lower()
+            value_clean = value.strip().strip("'\"")
+            if key_clean and key_clean not in self._FIELD_STOPWORDS and value_clean:
+                fields[key_clean] = value_clean
         return fields
 
     async def perform_browser_action(
@@ -182,6 +285,10 @@ class WebAgent:
 
         target_url = self._normalize_url(url)
         browser = browser_name or self.default_browser
+        # Set when Playwright could not load the page. Everything below only
+        # LAUNCHES a browser, which is not the same as having the document
+        # under our control - callers that need the DOM have to be told.
+        driver_error: Optional[str] = None
 
         # Prefer a real browser-driver when available for reliable DOM control
         if self.browser_driver:
@@ -193,15 +300,19 @@ class WebAgent:
                         "browser": "playwright",
                         "url": target_url,
                         "launch_mode": "driver",
+                        "dom_available": True,
                         "message": f"Opened {target_url} via Playwright",
                     }
                     self.last_url = target_url
                     self.last_browser = browser
+                    self._last_nav_dom_available = True
                     return navigation_result
                 else:
                     logger.warning("Playwright navigation failed: {}", nav.get("error"))
+                    driver_error = nav.get("error")
             except Exception as exc:
                 logger.warning("Playwright goto exception: {}", str(exc))
+                driver_error = str(exc)
 
         result = self.system_agent.open_application(browser, args=[target_url])
         launch_mode = "application"
@@ -233,8 +344,19 @@ class WebAgent:
             "browser": browser,
             "url": target_url,
             "launch_mode": launch_mode,
+            # A launched browser is not a page we can read or type into.
+            # Callers that need the document must know the difference.
+            "dom_available": False,
             "message": f"Opened {target_url} in {browser}",
         }
+
+        if driver_error:
+            navigation_result["driver_error"] = driver_error
+            navigation_result["warning"] = (
+                f"Opened {target_url} in {browser}, but could not take control of "
+                f"the page ({driver_error}). Anything that needs to read or fill "
+                "the page will not work here."
+            )
 
         if result.get("pid") is not None:
             navigation_result["pid"] = result["pid"]
@@ -243,6 +365,7 @@ class WebAgent:
 
         self.last_url = target_url
         self.last_browser = browser
+        self._last_nav_dom_available = False
 
         return navigation_result
 
@@ -289,11 +412,20 @@ class WebAgent:
         result["message"] = f"Searched for '{clean_query}' on {site_name}"
         return result
 
+    CONFIRMATION_TTL_SECONDS = 300
+
     async def confirm_submission(self, token: str) -> Dict[str, Any]:
         """Confirm and execute a previously staged submit identified by `token`."""
         ctx = self._pending_confirmations.get(token)
         if not ctx:
             return {"success": False, "error": "Invalid or expired confirmation token."}
+
+        if time.time() - ctx.get("created", 0) > self.CONFIRMATION_TTL_SECONDS:
+            del self._pending_confirmations[token]
+            return {
+                "success": False,
+                "error": "Confirmation token expired. Please stage the form again before confirming.",
+            }
 
         field_map = ctx.get("field_map")
         submit_sel = ctx.get("submit_selector")
@@ -336,6 +468,10 @@ class WebAgent:
                         "form_name": form_name,
                         "verification": "unknown",
                         "submission_verified": False,
+                        # Same meaning as submission_verified, in the key the
+                        # rest of the codebase uses: the click happened, the
+                        # outcome could not be confirmed.
+                        "verified": False,
                         "page_text": text[:200],
                     }
             except Exception as exc:
@@ -384,8 +520,13 @@ class WebAgent:
             }
 
         text = re.sub(r"<[^>]+>", " ", content_html or "").lower()
-        success_keywords = ["thank you", "success", "submitted", "received", "done", "confirm", "complete"]
-        error_keywords = ["error", "invalid", "required", "failed", "incorrect"]
+        # "confirm" and "required" removed: both are common false positives -
+        # a page asking the user to "confirm your details" (i.e. NOT yet
+        # submitted) read as a verified success, and routine "* required
+        # fields" footer text on an otherwise-successful page read as a
+        # failure.
+        success_keywords = ["thank you", "success", "submitted", "received", "done", "complete"]
+        error_keywords = ["error", "invalid", "failed", "incorrect"]
 
         has_success = any(kw in text for kw in success_keywords)
         has_error = any(kw in text for kw in error_keywords)
@@ -530,6 +671,24 @@ class WebAgent:
         Fill a form using OCR analysis, stored patterns, and keyboard navigation.
         The current workflow assumes the browser is open and focus is on the page.
         """
+
+        # If the last navigation only LAUNCHED a browser, there is no page
+        # under our control. The keyboard fallback would still "succeed" by
+        # typing into whatever window happens to be focused and counting the
+        # keystrokes as filled fields - which is how filling a form on a page
+        # that failed to load reported four fields filled.
+        if getattr(self, "_last_nav_dom_available", None) is False:
+            return {
+                "success": False,
+                "requires_user_attention": True,
+                "error": (
+                    "The page is not under my control - the last navigation only "
+                    "opened a browser window. I will not type into whatever "
+                    "happens to be focused. Reopen the page and try again."
+                ),
+                "fields_filled": [],
+                "fill_method": "refused_no_dom",
+            }
 
         analysis = await self.analyze_form(form_name=form_name)
         field_sequence = self._build_field_sequence(field_values, analysis if analysis.get("success") else {})
@@ -755,6 +914,33 @@ class WebAgent:
                 analysis.get("error", "Could not analyze the visible form before filling. Falling back to sequential typing.")
             )
 
+        # The keyboard fallback types into whatever window currently holds OS
+        # focus - it has no way to confirm it is aimed at the intended form.
+        # Refuse outright when the values are sensitive, or when we could not
+        # locate the first field on screen and would be typing blind after a
+        # bare Tab. Silently typing a password into whatever happens to be
+        # focused is not an acceptable failure mode.
+        sensitive_fields = [
+            field["name"] for field in field_sequence
+            if any(marker in field["name"].lower()
+                   for marker in ("password", "passwd", "pwd", "pin", "cvv", "card", "secret", "token", "ssn"))
+        ]
+        if sensitive_fields:
+            return {
+                "success": False,
+                "requires_user_attention": True,
+                "error": (
+                    "Refusing to type sensitive values (" + ", ".join(sensitive_fields) + ") "
+                    "without confirmed field targeting. This fallback types into whatever "
+                    "window has focus, so it cannot guarantee where the text lands. "
+                    "Please fill these fields yourself, or use a page the browser driver "
+                    "can address directly."
+                ),
+                "fields_filled": executed_fields,
+                "missing_fields": sensitive_fields,
+                "fill_method": "refused_sensitive_keyboard_fallback",
+            }
+
         if focus_first_field and field_sequence:
             first_field_name = field_sequence[0]["name"]
             target_label = first_field_name
@@ -765,13 +951,36 @@ class WebAgent:
                     break
 
             coords = self.vision_agent.find_text_coordinates(target_label)
-            if coords:
-                x, y = coords
-                click_result = self.click_element(x, y + 45)
-                if not click_result.get("success"):
-                    self.system_agent.press_key("tab")
-            else:
-                self.system_agent.press_key("tab")
+            if not coords:
+                return {
+                    "success": False,
+                    "requires_user_attention": True,
+                    "error": (
+                        f"Could not locate the '{first_field_name}' field on screen, so I "
+                        "cannot confirm where typing would go. Stopping instead of typing "
+                        "blind into the focused window."
+                    ),
+                    "fields_filled": executed_fields,
+                    "detected_labels": detected_labels,
+                    "fill_method": "refused_unlocated_field",
+                }
+
+            x, y = coords
+            # The +45 offset assumes a label-above-input layout at a specific
+            # DPI/zoom; it is a guess, so a failed click is a hard stop rather
+            # than a Tab-and-hope.
+            click_result = self.click_element(x, y + self.label_to_input_offset_px)
+            if not click_result.get("success"):
+                return {
+                    "success": False,
+                    "requires_user_attention": True,
+                    "error": (
+                        f"Could not focus the '{first_field_name}' field. Stopping rather "
+                        "than typing into an unconfirmed target."
+                    ),
+                    "fields_filled": executed_fields,
+                    "fill_method": "refused_unfocused_field",
+                }
             await asyncio.sleep(self.form_field_delay_seconds)
 
 
@@ -880,7 +1089,14 @@ class WebAgent:
         cleaned = url.strip()
         if not cleaned:
             return self.search_engine_url.format(query="")
-        if cleaned.startswith(("http://", "https://")):
+
+        # Any real scheme is left alone. Checking only http/https turned
+        # "file:///C:/..." into "https://file///C:/..." - a hostname called
+        # "file" that will never resolve.
+        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", cleaned):
+            return cleaned
+        # Schemes without a "//" authority: mailto:, about:, data:, tel:
+        if re.match(r"^(?:mailto|about|data|tel|chrome|edge|view-source):", cleaned):
             return cleaned
         return f"https://{cleaned}"
 
