@@ -171,3 +171,30 @@ def guard_real_data(isolate_test_data):
             "The test run wrote into the real data directory: " + detail +
             ". A module is bypassing core.config and hardcoding its path."
         )
+
+
+@pytest.fixture(autouse=True)
+def _keep_generated_files_out_of_real_documents(tmp_path_factory, monkeypatch):
+    """Generated documents default to the user's Documents folder.
+
+    That is right for the product and wrong for a test run: the suite was
+    leaving .txt/.docx/.xlsx files in the user's real Documents on every
+    execution, in the same spirit as the reminder pollution this file was
+    written to stop.
+
+    Only the default write destination moves. Path.home() itself is left
+    alone on purpose - FileAgent captures it at init as its delete-safety
+    boundary, so faking it makes the agent refuse to touch pytest's own
+    tmp_path.
+    """
+    docs = tmp_path_factory.mktemp("documents")
+    try:
+        import main
+    except Exception:
+        yield
+        return
+    monkeypatch.setattr(
+        main.AutonomousSystemController, "_documents_dir",
+        lambda self: docs, raising=False,
+    )
+    yield

@@ -247,6 +247,134 @@ class BusinessAgent:
             "total": len(filtered_tasks)
         }
 
+    def delete_task(
+        self,
+        title: Optional[str] = None,
+        task_id: Optional[str] = None,
+        delete_all: bool = False,
+    ) -> Dict[str, Any]:
+        """Delete tasks by title, by id, or all of them.
+
+        Title matching is case-insensitive and accepts a substring so the
+        user does not have to reproduce the stored title exactly. An
+        ambiguous title is reported back rather than guessed at - deleting
+        the wrong record silently is worse than asking.
+        """
+        if not self.tasks:
+            return {"success": True, "deleted": 0, "message": "There were no tasks to delete."}
+
+        if delete_all:
+            count = len(self.tasks)
+            removed = [t.get("title", "untitled") for t in self.tasks]
+            self.tasks = []
+            self._save_tasks()
+            return {
+                "success": True,
+                "deleted": count,
+                "deleted_titles": removed,
+                "message": f"Deleted all {count} task{'s' if count != 1 else ''}.",
+            }
+
+        if task_id:
+            matches = [t for t in self.tasks if t.get("id") == task_id]
+        elif title:
+            needle = title.strip().lower()
+            matches = [t for t in self.tasks
+                       if needle == (t.get("title") or "").strip().lower()]
+            if not matches:
+                matches = [t for t in self.tasks
+                           if needle in (t.get("title") or "").lower()]
+        else:
+            return {"success": False, "error": "Tell me which task to delete."}
+
+        if not matches:
+            available = [t.get("title", "untitled") for t in self.tasks[:8]]
+            return {
+                "success": False,
+                "error": f"No task matches {title or task_id!r}.",
+                "available_tasks": available,
+            }
+
+        if len(matches) > 1 and not task_id:
+            return {
+                "success": False,
+                "error": f"{len(matches)} tasks match {title!r}. Be more specific.",
+                "matches": [t.get("title") for t in matches],
+            }
+
+        target = matches[0]
+        self.tasks = [t for t in self.tasks if t.get("id") != target.get("id")]
+        self._save_tasks()
+        return {
+            "success": True,
+            "deleted": 1,
+            "task": target.get("title"),
+            "message": f"Deleted task: {target.get('title')}",
+        }
+
+    def remove_team_member(
+        self,
+        name: Optional[str] = None,
+        member_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Remove someone from the team roster.
+
+        Matched by name the way a person would say it, since nobody
+        refers to a colleague by UUID.
+        """
+        team_path = self._data_file("team_members.json")
+        try:
+            if team_path.exists():
+                with open(team_path, "r", encoding="utf-8") as f:
+                    team_members = json.load(f)
+            else:
+                team_members = []
+        except Exception as e:
+            return {"success": False, "error": f"Failed to load team members: {str(e)}"}
+
+        if not team_members:
+            return {"success": False, "error": "There is nobody on the team yet."}
+
+        if member_id:
+            matches = [m for m in team_members if m.get("id") == member_id]
+        elif name:
+            needle = name.strip().lower()
+            matches = [m for m in team_members
+                       if needle == (m.get("name") or "").strip().lower()]
+            if not matches:
+                matches = [m for m in team_members
+                           if needle in (m.get("name") or "").lower()]
+        else:
+            return {"success": False, "error": "Tell me who to remove."}
+
+        if not matches:
+            return {
+                "success": False,
+                "error": f"Nobody on the team is named {name or member_id!r}.",
+                "team": [m.get("name") for m in team_members],
+            }
+        if len(matches) > 1 and not member_id:
+            return {
+                "success": False,
+                "error": f"{len(matches)} team members match {name!r}. Be more specific.",
+                "matches": [m.get("name") for m in matches],
+            }
+
+        target = matches[0]
+        remaining = [m for m in team_members if m.get("id") != target.get("id")]
+        try:
+            write_json_atomic(team_path, remaining)
+        except Exception as e:
+            return {"success": False, "error": f"Failed to save team: {str(e)}"}
+
+        return {
+            "success": True,
+            "removed": target.get("name"),
+            "role": target.get("role"),
+            "remaining": len(remaining),
+            "message": f"Removed {target.get('name')} from the team.",
+        }
+
     def update_task_status(
         self,
         task_id: str,
@@ -2399,12 +2527,27 @@ ASC"""
             logger.warning("Failed to load team members: {}", str(e))
             team_members = []
         
-        # Check if team member already exists
+        # Check if team member already exists.
+        # Email is the identity ONLY when there is one. Matching on a
+        # missing email made every member added by name alone collide with
+        # the first: "add priya to the team" failed with "Team member with
+        # email None already exists".
         for member in team_members:
-            if member["email"] == email:
+            if email:
+                duplicate = member.get("email") == email
+            else:
+                duplicate = (
+                    not member.get("email")
+                    and (member.get("name") or "").strip().lower()
+                    == (name or "").strip().lower()
+                )
+            if duplicate:
                 return {
                     "success": False,
-                    "error": f"Team member with email {email} already exists"
+                    "error": (
+                        f"Team member with email {email} already exists"
+                        if email else f"{name} is already on the team"
+                    )
                 }
         
         # Create new team member

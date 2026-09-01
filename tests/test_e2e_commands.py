@@ -23,6 +23,7 @@ Run: python -m pytest tests/test_e2e_commands.py -v -s
 import asyncio
 import json
 import os
+import pathlib
 import sys
 import time
 from pathlib import Path
@@ -107,6 +108,32 @@ def record(command: str, expected_success: bool, result, elapsed):
 _REPORT = []
 
 
+def _reported_path(result):
+    """Pull the written path out of a result, whatever tier produced it.
+
+    Tiers nest their payload differently, so look in the obvious places
+    rather than assuming one shape.
+    """
+    if not isinstance(result, dict):
+        return None
+    for key in ("path", "filepath", "file_path"):
+        if result.get(key):
+            return result[key]
+    for holder in ("result", "step_result", "data", "output"):
+        nested = result.get(holder)
+        if isinstance(nested, dict):
+            found = _reported_path(nested)
+            if found:
+                return found
+    steps = result.get("steps") or result.get("results")
+    if isinstance(steps, list):
+        for step in reversed(steps):
+            found = _reported_path(step)
+            if found:
+                return found
+    return None
+
+
 def expect_success(controller, command, tmp_cwd=None):
     """Shared assertion body: run a command and honestly assert success."""
     if tmp_cwd:
@@ -160,13 +187,25 @@ class TestSystemCommands:
 
 class TestFileCommands:
     def test_create_and_verify_file(self, controller, tmp_path):
+        """A reported success must mean a file at the reported path.
+
+        Not "at the path this test guessed": bare filenames land in the
+        documents directory by design. What must never happen is a success
+        that reports a path with nothing behind it.
+        """
         target_name = "e2e_bon_created_file.txt"
-        expect_success(controller, f"create file {target_name}", tmp_cwd=str(tmp_path))
-        created = tmp_path / target_name
+        result = expect_success(
+            controller, f"create file {target_name}", tmp_cwd=str(tmp_path))
+
+        reported = _reported_path(result)
+        assert reported, (
+            f"create_file reported success without saying where the file went: {result}")
+        created = pathlib.Path(reported)
         assert created.exists(), (
-            "create_file reported success but the file does not exist on disk "
-            "- dishonest success detected"
-        )
+            f"create_file reported success at {reported} but nothing is there "
+            "- dishonest success detected")
+        assert created.name == target_name, (
+            f"asked for {target_name}, got {created.name}")
 
     def test_create_folder(self, controller, tmp_path):
         folder_name = "e2e_bon_folder"
@@ -264,15 +303,18 @@ class TestBrainTierCommands:
     def test_brain_create_file_with_content(self, controller, tmp_path):
         """Creative compound file command must actually create bt.txt with 'hi'."""
         target_name = "bt.txt"
-        expect_success(
+        result = expect_success(
             controller,
             f"create a file named {target_name} with content hi",
             tmp_cwd=str(tmp_path),
         )
-        created = tmp_path / target_name
+        reported = _reported_path(result)
+        assert reported, (
+            f"brain-tier create-file reported success without a path: {result}")
+        created = pathlib.Path(reported)
         assert created.exists(), (
-            "brain-tier create-file reported success but file missing on disk"
-        )
+            f"brain-tier create-file reported success at {reported} "
+            "but nothing is there")
         content = created.read_text(encoding="utf-8", errors="replace").strip().lower()
         assert "hi" in content, (
             f"file created but content wrong: {content!r}"

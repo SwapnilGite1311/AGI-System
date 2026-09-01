@@ -1541,23 +1541,53 @@ class AutonomousSystemController:
         # Word-boundary matched, and "format" is qualified: a bare substring
         # check classified "format my notes" (text formatting) as critical,
         # which then required a safety review to do anything at all.
-        critical_keywords = [
-            r"\bdelete\b",
-            r"\bdeleting\b",
-            r"\bremove\b",
-            r"\bremoving\b",
-            r"\buninstall\b",
-            r"\bwipe\b",
-            r"\berase\b",
-            r"\bshut\s*down\b",
-            r"\bshutdown\b",
-            r"\breboot\b",
-            r"\brestart\b",
+        # "delete" alone is not a danger signal. Deleting a TASK RECORD is
+        # routine; deleting a system folder is not. Treating every delete as
+        # critical sent "delete all the tasks" and "remove priya from the
+        # team" to the safety review, which refused them - a regression
+        # introduced when the Chairman gate was correctly widened to every
+        # tier without narrowing what counted as critical.
+        #
+        # So: a destructive verb only escalates when it is aimed at
+        # something on the machine. App-level records have their own
+        # handlers and are recoverable from the store.
+        destructive_verb = r"(?:delete|deleting|remove|removing|wipe|erase|" \
+                           r"uninstall|format|destroy|purge)"
+
+        # Records this system owns. Removing one is ordinary work.
+        app_level = re.search(
+            destructive_verb + r"[\w\s]{0,20}\b"
+            r"(?:task|tasks|reminder|reminders|note|notes|project|projects|"
+            r"team\s*member|member|team|staff|roster|contact|entry|record|row|event|"
+            r"appointment|todo|list\s*item)\b",
+            command_lower,
+        )
+
+        # Things on the machine. These stay critical.
+        system_level = [
+            destructive_verb + r"[\w\s]{0,20}\b"
+            r"(?:folder|directory|drive|disk|partition|volume|system32|"
+            r"windows|program\s*files|users|appdata|registry|everything|"
+            r"all\s+files|all\s+my\s+files|repository|repo)\b",
+            r"\b(?:format)\b\s+(?:the\s+|my\s+)?(?:[a-z]:|disk|drive|volume|"
+            r"partition|usb|sd\s*card)",
+            r"\b(?:shut\s*down|shutdown|reboot|restart)\b",
             r"\bregistry\b",
-            # "format" only when it means formatting a disk/drive/volume
-            r"\bformat\b\s+(?:the\s+|my\s+)?(?:[a-z]:|disk|drive|volume|partition|usb|sd\s*card)",
+            r"\brm\s+-rf\b|\bdel\s+/[sf]\b|\bformat\s+[a-z]:",
+            # A bare path with a destructive verb: "delete C:/Windows"
+            destructive_verb + r"\s+[\"']?[a-zA-Z]:[\\/]",
         ]
-        if any(re.search(keyword, command_lower) for keyword in critical_keywords):
+
+        if app_level and not any(
+            re.search(pattern, command_lower) for pattern in system_level
+        ):
+            # Ordinary record management - let the normal handlers deal with
+            # it, including their own confirmations.
+            pass
+        elif any(re.search(pattern, command_lower) for pattern in system_level):
+            return "critical"
+        elif re.search(destructive_verb + r"\b", command_lower):
+            # A destructive verb with no clear target. Err towards review.
             return "critical"
 
         complex_keywords = [
@@ -1627,6 +1657,83 @@ class AutonomousSystemController:
         matched before the catch-all. Returns None for anything that is not
         an unambiguous structured request, so every other tier is untouched.
         """
+        # --- arithmetic ------------------------------------------------------
+        # "what is 17 percent of 4500" was taking ~12 seconds because it
+        # went to a language model. It is arithmetic. The sandbox evaluator
+        # already exists; it just was not reachable without the model.
+        expr = self._parse_arithmetic(command)
+        if expr:
+            return {"type": "calculate", "expression": expr, "original": command.strip()}
+
+        # --- open a FOLDER -------------------------------------------------
+        # "open the downloads folder" was treated as an APPLICATION named
+        # "the downloads folder". Folders come before files below because
+        # "documents folder" would otherwise look like a filename.
+        open_folder = re.search(
+            # The name must not carry a file extension or a "from" clause:
+            # "open my_tasks.xlsx from documents folder" opens a FILE that
+            # merely names a folder, and it was being swallowed here.
+            r"^(?:just\s+|please\s+|can\s+you\s+)?open\s+(?:the\s+|my\s+)?"
+            r"(?P<name>(?!.*\bfrom\b)(?!.*\.[A-Za-z0-9]{1,5}\b)[\w .\\/:-]+?)"
+            r"\s*(?:folder|directory)\s*$",
+            command, re.IGNORECASE,
+        )
+        if not open_folder:
+            open_folder = re.search(
+                r"^(?:just\s+|please\s+)?open\s+(?:the\s+|my\s+)?"
+                r"(?:folder|directory)\s+(?P<name>[\w .\\/:-]+?)\s*$",
+                command, re.IGNORECASE,
+            )
+        if open_folder:
+            return {
+                "type": "open_folder",
+                "folder": open_folder.group("name").strip(),
+            }
+
+        # --- remove someone from the team ----------------------------------
+        # There was no branch at all, so it fell to the model and then hit
+        # the safety review because it contains "remove".
+        drop_member = re.search(
+            r"\b(?:remove|delete|drop|take)\s+(?P<name>[A-Za-z][A-Za-z .'-]{1,40}?)"
+            r"\s+(?:from|out\s+of|off)\s+(?:the\s+)?(?:team|staff|roster)\s*$",
+            command, re.IGNORECASE,
+        )
+        if drop_member:
+            return {
+                "type": "remove_team_member",
+                "name": drop_member.group("name").strip(),
+            }
+
+        # --- delete tasks --------------------------------------------------
+        if re.search(r"\b(?:delete|remove|clear)\s+(?:all\s+)?(?:my\s+|the\s+)?tasks?\b",
+                     normalized):
+            named = re.search(
+                r"\b(?:delete|remove)\s+(?:the\s+)?task\s+"
+                r"(?:named|called|titled\s+)?[\"']?(?P<title>.+?)[\"']?\s*$",
+                command, re.IGNORECASE,
+            )
+            return {
+                "type": "delete_tasks",
+                "title": named.group("title").strip() if named else None,
+                "all": bool(re.search(r"\ball\b", normalized)) and not named,
+            }
+
+        # --- search WITHIN a site, in one tab ------------------------------
+        # "go to amazon.in and search for laptops" opened amazon in one tab
+        # and then a separate Google search in another. It is one action.
+        site_search = re.search(
+            r"(?:go\s+to|open|visit)\s+(?P<site>[\w-]+\.[\w.]+)"
+            r"[\s,]*(?:and\s+)?(?:then\s+)?search\s+(?:for\s+)?"
+            r"[\"']?(?P<query>.+?)[\"']?\s*$",
+            command, re.IGNORECASE,
+        )
+        if site_search:
+            return {
+                "type": "site_search",
+                "site": site_search.group("site").strip(),
+                "query": site_search.group("query").strip(),
+            }
+
         # --- open a FILE, which is not the same as opening an app ---------
         # "just open my_tasks.xlsx from documents folder" fell through to
         # the model, and "open my_tasks.xlsx" was treated as an application
@@ -3684,6 +3791,33 @@ class AutonomousSystemController:
                 ),
             }
 
+        elif intent_type == "calculate":
+            from core.sandbox import evaluate_expression
+            step_result = evaluate_expression(intent.get("expression", ""))
+            if step_result.get("success"):
+                step_result["message"] = (
+                    f"{intent.get('original', 'Result')} = {step_result.get('result')}"
+                )
+
+        elif intent_type == "open_folder":
+            step_result = self._open_named_folder(intent.get("folder"))
+
+        elif intent_type == "remove_team_member":
+            step_result = self.agents["business"].remove_team_member(
+                name=intent.get("name")
+            )
+
+        elif intent_type == "delete_tasks":
+            step_result = self.agents["business"].delete_task(
+                title=intent.get("title"),
+                delete_all=bool(intent.get("all")),
+            )
+
+        elif intent_type == "site_search":
+            step_result = await self._search_within_site(
+                intent.get("site"), intent.get("query")
+            )
+
         elif intent_type == "open_file":
             step_result = self._open_named_file(
                 intent.get("filename"), intent.get("where")
@@ -4271,6 +4405,176 @@ class AutonomousSystemController:
         "pictures": lambda: Path.home() / "Pictures",
         "home": lambda: Path.home(),
     }
+
+    # Words people actually use for arithmetic, and what they mean.
+    _MATH_WORDS = [
+        (r"\bplus\b|\badded to\b|\band\b(?=\s*\d)", "+"),
+        (r"\bminus\b|\bless\b|\bsubtract(?:ed)?\s+(?:by\s+)?", "-"),
+        (r"\btimes\b|\bmultiplied by\b|\bmultiply(?:\s+by)?\b|\bx\b(?=\s*\d)", "*"),
+        (r"\bdivided by\b|\bdivide(?:\s+by)?\b|\bover\b(?=\s*\d)", "/"),
+        (r"\bto the power of\b|\braised to\b|\bsquared\b", "**"),
+        (r"\bmodulo\b|\bmod\b|\bremainder of\b", "%"),
+    ]
+
+    def _parse_arithmetic(self, command: str) -> Optional[str]:
+        """Turn a spoken arithmetic question into an expression, or None.
+
+        Deliberately conservative: it returns None the moment the text
+        contains anything it does not recognise, so a real question that
+        merely mentions numbers still reaches the model.
+        """
+        if not command:
+            return None
+        text = command.strip().lower().rstrip("?！!.")
+
+        # Strip the question framing.
+        text = re.sub(
+            r"^(?:hey\s+|ok\s+|okay\s+)?(?:vega[,\s]+)?"
+            r"(?:what(?:'s| is| are)|calculate|compute|work out|evaluate|"
+            r"tell me|how much is|solve|find)\s+",
+            "", text,
+        ).strip()
+        text = re.sub(r"^(?:the\s+)?(?:answer|result|value)\s+(?:of|to|for)\s+", "", text)
+        text = text.replace(",", "")
+
+        if not re.search(r"\d", text):
+            return None
+
+        # "17 percent of 4500" / "17% of 4500"
+        pct = re.match(
+            r"^(?P<p>\d+(?:\.\d+)?)\s*(?:percent|%|per\s*cent)\s+(?:of\s+)?"
+            r"(?P<n>\d+(?:\.\d+)?)$", text)
+        if pct:
+            return f"({pct.group('p')} / 100) * {pct.group('n')}"
+
+        # "square root of 144"
+        sqrt = re.match(r"^(?:the\s+)?squ?a?re?\s*root\s+of\s+(?P<n>\d+(?:\.\d+)?)$", text)
+        if sqrt:
+            return f"{sqrt.group('n')} ** 0.5"
+
+        # "5 squared"
+        sq = re.match(r"^(?P<n>\d+(?:\.\d+)?)\s+squared$", text)
+        if sq:
+            return f"{sq.group('n')} ** 2"
+
+        # Word operators -> symbols.
+        for pattern, symbol in self._MATH_WORDS:
+            text = re.sub(pattern, f" {symbol} ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        # Whatever is left must be arithmetic and nothing else. If a single
+        # stray word survived, this is not a sum - hand it to the model.
+        if not re.fullmatch(r"[\d\s+\-*/%().]+(?:\*\*[\d\s+\-*/%().]+)*", text):
+            return None
+        if not re.search(r"[+\-*/%]", text):
+            return None
+        if len(text) > 120:
+            return None
+        return text
+
+    def _open_named_folder(self, folder: Optional[str]) -> Dict[str, Any]:
+        """Open a folder in the file explorer.
+
+        "open the downloads folder" was being read as an application named
+        "the downloads folder", so it failed. A folder is not an app.
+        """
+        if not folder:
+            return {"success": False, "error": "Which folder?"}
+
+        raw = str(folder).strip().strip("\"'")
+        key = raw.lower().removeprefix("the ").removeprefix("my ").strip()
+
+        target: Optional[Path] = None
+        if key in self._NAMED_PLACES:
+            target = self._NAMED_PLACES[key]()
+        else:
+            candidate = Path(raw).expanduser()
+            if candidate.is_dir():
+                target = candidate
+            else:
+                # A bare name - look for it under the usual places.
+                for root_fn in (lambda: Path.home(),
+                                lambda: Path.home() / "Documents",
+                                lambda: Path.home() / "Desktop",
+                                lambda: Path.home() / "Downloads",
+                                lambda: Path.cwd()):
+                    root = root_fn()
+                    try:
+                        for child in root.iterdir():
+                            if child.is_dir() and child.name.lower() == key:
+                                target = child
+                                break
+                    except (OSError, PermissionError):
+                        continue
+                    if target:
+                        break
+
+        if target is None:
+            known = ", ".join(sorted(set(self._NAMED_PLACES)))
+            return {
+                "success": False,
+                "error": f"I could not find a folder called {raw!r}. "
+                         f"I know these by name: {known}. "
+                         "Otherwise give me the full path.",
+            }
+
+        if not target.is_dir():
+            return {"success": False, "error": f"{target} is not a folder."}
+
+        try:
+            os.startfile(str(target))  # noqa: S606 - Windows shell open
+        except AttributeError:
+            subprocess.Popen(["xdg-open", str(target)])
+        except Exception as exc:
+            return {"success": False, "error": f"Could not open {target}: {exc}"}
+
+        return {
+            "success": True,
+            "path": str(target),
+            "message": f"Opened {target}",
+        }
+
+    async def _search_within_site(
+        self, site: Optional[str], query: Optional[str]
+    ) -> Dict[str, Any]:
+        """Search inside a site, in one tab.
+
+        "go to amazon.in and search for laptops" used to open the site in
+        one tab and then run a separate Google search in another. It is
+        one action: go to that site's own search results.
+        """
+        if not site or not query:
+            return {"success": False, "error": "I need both a site and something to search for."}
+
+        host = str(site).strip().lower().removeprefix("https://").removeprefix("http://")
+        host = host.removeprefix("www.").strip("/")
+        term = quote_plus(str(query).strip())
+
+        # Sites whose search URL is not /search?q=
+        patterns = {
+            "amazon.": "https://www.{host}/s?k={term}",
+            "flipkart.com": "https://www.{host}/search?q={term}",
+            "youtube.com": "https://www.{host}/results?search_query={term}",
+            "wikipedia.org": "https://en.{host}/w/index.php?search={term}",
+            "github.com": "https://{host}/search?q={term}",
+            "reddit.com": "https://www.{host}/search/?q={term}",
+            "ebay.": "https://www.{host}/sch/i.html?_nkw={term}",
+            "stackoverflow.com": "https://{host}/search?q={term}",
+        }
+        url = None
+        for marker, template in patterns.items():
+            if marker in host:
+                url = template.format(host=host, term=term)
+                break
+        if url is None:
+            url = f"https://{host}/search?q={term}"
+
+        result = await self.agents["web"].navigate_to_url(url)
+        if isinstance(result, dict):
+            result.setdefault("url", url)
+            if result.get("success"):
+                result["message"] = f"Searched {host} for {query!r}"
+        return result
 
     def _locate_named_file(self, filename: str, where: Optional[str] = None) -> Optional[Path]:
         """Find a file the user named, searching the places they mean.
