@@ -506,6 +506,18 @@ class AutonomousSystemController:
         if not self.voice_enabled:
             return
 
+        # Piper first when it is available and the user wants the natural
+        # voice. SAPI was first only because speech used to block the
+        # prompt and SAPI is instant; now that speech runs on its own
+        # thread, piper's extra beat costs nothing anyone is waiting on.
+        prefer_natural = bool(
+            (self.config.get("audio") or {}).get("prefer_natural_voice", True)
+        )
+        if prefer_natural and self.voice_service_available:
+            if self._speak_via_piper(text):
+                return
+            logger.debug("Piper unavailable for this utterance, using SAPI.")
+
         # --- Tier 1: pyttsx3 (offline SAPI) ---
         try:
             import pyttsx3
@@ -528,7 +540,14 @@ class AutonomousSystemController:
         if not self.voice_service_available:
             logger.warning("No speech engine available.")
             return
+        self._speak_via_piper(text)
 
+    def _speak_via_piper(self, text: str) -> bool:
+        """Speak through the local piper server. True if sound was produced.
+
+        Only ever called on the speech thread, so the network round trip
+        and the playback cannot delay anything the user is waiting for.
+        """
         try:
             response = requests.post(
                 f"{self.voice_service_url}/speak",
@@ -540,7 +559,7 @@ class AutonomousSystemController:
             )
             if response.status_code != 200:
                 logger.warning("Voice server speak failed: %s", response.status_code)
-                return
+                return False
 
             tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
             tmp_file.write(response.content)
@@ -550,10 +569,13 @@ class AutonomousSystemController:
                 winsound.PlaySound(tmp_file.name, winsound.SND_FILENAME)
             else:
                 logger.warning("Voice playback only supports Windows via winsound.")
+                return False
 
             os.unlink(tmp_file.name)
+            return True
         except Exception as exc:
-            logger.error("Voice playback failed: {}", str(exc))
+            logger.debug("Piper playback failed: {}", str(exc))
+            return False
 
     def _listen_for_voice_command(self) -> Optional[str]:
         """Record and transcribe a voice command.
