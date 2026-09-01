@@ -27,7 +27,6 @@ if sys.platform == "win32":
     import winsound
 
 from agents.file_agent import FileAgent
-from agents.learning_agent import LearningAgent
 from agents.conversation_agent import ConversationAgent
 from agents.system_agent import SystemAgent
 from agents.vision_agent import VisionAgent
@@ -36,7 +35,6 @@ from agents.business_agent import BusinessAgent
 from agents.business_process_automation import BusinessProcessAutomation
 from agents.enterprise_security import EnterpriseSecurity
 from agents.advanced_analytics import AdvancedAnalytics
-from learning.advanced_neural_network import AdvancedNeuralNetwork
 from core.chairman import Chairman
 from core.council import LLMCouncil
 from core.autonomy import AutonomyEngine
@@ -97,11 +95,19 @@ class _LazyAgents:
                 vision_agent=self["vision"],
                 learning_agent=self["learning"],
             )
+        if key == "learning":
+            # Imported here, not at module scope: the chain behind this
+            # ends at torch, which costs seconds to import.
+            from agents.learning_agent import LearningAgent
+            return LearningAgent(cfg)
+        if key == "advanced_neural":
+            # torch AND sklearn. Very few sessions ever reach this.
+            from learning.advanced_neural_network import AdvancedNeuralNetwork
+            return AdvancedNeuralNetwork(cfg)
         builders = {
             "business_process": BusinessProcessAutomation,
             "security": EnterpriseSecurity,
             "analytics": AdvancedAnalytics,
-            "advanced_neural": AdvancedNeuralNetwork,
         }
         if key in builders:
             return builders[key](cfg)
@@ -183,11 +189,10 @@ class AutonomousSystemController:
         else:
             logger.info("Ollama is already running")
 
-        learning_agent = LearningAgent(config_path)
-
+        # "learning" is deliberately NOT seeded here - building it eagerly
+        # was what made the lazy map pointless for the expensive agent.
         self.agents = _LazyAgents(config_path, {
             "conversation": conversation_agent,
-            "learning": learning_agent,
             "system": system_agent,
         })
 

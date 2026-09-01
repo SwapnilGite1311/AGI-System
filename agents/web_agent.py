@@ -17,7 +17,10 @@ from urllib.parse import quote_plus, urlparse
 
 from loguru import logger
 
-from agents.learning_agent import LearningAgent
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # LearningAgent pulls in torch - keep it off startup
+    from agents.learning_agent import LearningAgent
 from agents.system_agent import SystemAgent
 from agents.vision_agent import VisionAgent
 
@@ -39,14 +42,19 @@ class WebAgent:
         config_path: str = "./config/settings.json",
         system_agent: Optional[SystemAgent] = None,
         vision_agent: Optional[VisionAgent] = None,
-        learning_agent: Optional[LearningAgent] = None,
+        learning_agent: Optional["LearningAgent"] = None,
     ):
         """Initialize the web agent."""
 
         self.config = load_config(config_path)
         self.system_agent = system_agent or SystemAgent(config_path)
         self.vision_agent = vision_agent or VisionAgent(config_path)
-        self.learning_agent = learning_agent or LearningAgent(config_path)
+        if learning_agent is None:
+            # Imported at point of use: this chain ends at torch, which
+            # costs seconds and is not needed to browse the web.
+            from agents.learning_agent import LearningAgent
+            learning_agent = LearningAgent(config_path)
+        self.learning_agent = learning_agent
 
         web_config = self.config.get("web_automation", {})
         self.default_browser = web_config.get("default_browser", "chrome")
