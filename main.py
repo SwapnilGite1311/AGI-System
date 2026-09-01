@@ -5854,7 +5854,15 @@ class AutonomousSystemController:
                             print("\nVoice mode OFF - back to typing.\n")
                             continue
                     else:
-                        command = (await asyncio.to_thread(prompt_input, "You: ")).strip()
+                        # NOT asyncio.to_thread: that starts a new reader
+                        # thread per prompt, and a cancelled await leaves
+                        # the old one blocked on stdin swallowing input.
+                        from core.console import read_line
+                        typed = await read_line("You: ")
+                        if typed is None:  # stdin closed
+                            self.running = False
+                            break
+                        command = typed.strip()
 
                     if not command:
                         continue
