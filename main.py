@@ -4524,14 +4524,26 @@ class AutonomousSystemController:
         """Send immediately if the user has opted out of confirmation,
         otherwise stage the send behind the existing confirm/cancel flow.
 
-        send_email reaches a real third party and is irreversible once sent
-        (flagged as S-2 in the audit: outward-facing actions had no
-        confirmation gate on any path). Reuses the same short-term-memory +
-        confirm/cancel pattern already built for dangerous shell commands
-        (pending_system_command) rather than inventing a new mechanism.
-        Opt out with: "remember that auto_confirm_email is true".
+        send_email reaches a real third party and is irreversible once sent.
+        The owner has chosen to send without a prompt, so the default is now
+        to send; the confirm/cancel path still exists and is one setting
+        away.
+
+        Turn confirmation back on with either:
+            "remember that auto_confirm_email is false"
+            email.confirm_before_send = true   in config/settings.json
+
+        The hourly budget below is deliberately kept. It does not second-
+        guess the user - it stops a LOOP from sending in bulk, which is a
+        different failure from a person choosing to send one message.
         """
-        if bool(self.memory.get_user_preference("auto_confirm_email", False)):
+        auto = self.memory.get_user_preference("auto_confirm_email", None)
+        if auto is None:
+            # Config decides when the user has expressed no preference.
+            auto = not bool(
+                (self.config.get("email") or {}).get("confirm_before_send", False)
+            )
+        if bool(auto):
             if not self._check_unattended_action_budget():
                 return {
                     "success": False,

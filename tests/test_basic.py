@@ -1863,7 +1863,12 @@ def test_verify_outcome_fails_open_when_model_unavailable():
     assert result["verified"] is False
 
 
-def test_send_email_stages_by_default_then_confirm_sends():
+def test_send_email_sends_without_asking_by_default():
+    """The owner chose to send without a prompt.
+
+    Confirmation still exists and is one setting away - the test below
+    proves that path still works - but the default is to send.
+    """
     controller = build_controller()
 
     class RecordingBusinessAgent:
@@ -1875,6 +1880,30 @@ def test_send_email_stages_by_default_then_confirm_sends():
             return {"success": True, **kwargs}
 
     controller.agents["business"] = RecordingBusinessAgent()
+
+    result = controller._stage_or_send_email("raj@example.com", "Invoice", "See attached")
+    assert result["success"] is True
+    assert not result.get("needs_confirmation")
+    assert controller.agents["business"].sent == [
+        {"to_email": "raj@example.com", "subject": "Invoice",
+         "body": "See attached", "priority": "normal"}
+    ]
+
+
+def test_confirmation_still_works_when_switched_back_on():
+    """The safety path must not rot just because it is off by default."""
+    controller = build_controller()
+
+    class RecordingBusinessAgent:
+        def __init__(self):
+            self.sent = []
+
+        def send_email_notification(self, **kwargs):
+            self.sent.append(kwargs)
+            return {"success": True, **kwargs}
+
+    controller.agents["business"] = RecordingBusinessAgent()
+    controller.memory.save_user_preference("auto_confirm_email", False)
 
     staged = controller._stage_or_send_email("raj@example.com", "Invoice", "See attached")
     assert staged["success"] is False
@@ -1893,7 +1922,9 @@ def test_send_email_stages_by_default_then_confirm_sends():
 
 
 def test_send_email_can_be_cancelled():
+    """Only reachable with confirmation switched on, but must still work."""
     controller = build_controller()
+    controller.memory.save_user_preference("auto_confirm_email", False)
 
     class RecordingBusinessAgent:
         def __init__(self):

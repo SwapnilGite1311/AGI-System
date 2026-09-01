@@ -187,7 +187,8 @@
     "check_interval_seconds": 20,
     "allowed_senders": [
       "swapnilgite9028@gmail.com"
-    ]
+    ],
+    "confirm_before_send": false
   },
   "conversation": {
     "model": "qwen2.5:3b",
