@@ -647,8 +647,28 @@ class SystemAgent:
                 env.setdefault("OLLAMA_MAX_LOADED_MODELS", str(ollama_config["max_loaded_models"]))
             if ollama_config.get("keep_alive") is not None:
                 env.setdefault("OLLAMA_KEEP_ALIVE", str(ollama_config["keep_alive"]))
-            proc = subprocess.Popen(cmd, shell=False, env=env)
-            self.managed_processes[proc.pid] = proc
+            # Detached, in its own process group. As a plain child it shared
+            # VEGA's console, so Ctrl+C out of a session killed Ollama too -
+            # which is why every session started by restarting it, and why a
+            # command issued in the first few seconds could not reach a
+            # model.
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    | getattr(subprocess, "DETACHED_PROCESS", 0)
+                )
+            proc = subprocess.Popen(
+                cmd,
+                shell=False,
+                env=env,
+                creationflags=creation_flags,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=(sys.platform != "win32"),
+            )
+            # Deliberately NOT added to managed_processes: this outlives the
+            # session on purpose, and nothing should reap it on the way out.
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 

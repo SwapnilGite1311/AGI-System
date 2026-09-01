@@ -5,6 +5,7 @@ Only loads ONE model at a time to save RAM
 
 import asyncio
 import json
+import re
 import os
 from typing import Dict, Any, List, Optional
 from ollama import AsyncClient
@@ -24,6 +25,32 @@ MODEL_FALLBACKS = {
     "tinyllama": ["tinyllama:latest"],
     "tinyllama:latest": ["tinyllama:latest"],
 }
+
+
+def _degenerate_output(content: str) -> Optional[str]:
+    """Is this generated text obviously unusable?
+
+    Small models under-specified prompts fall into loops and placeholders.
+    These checks are deliberately blunt - they are meant to catch output
+    that is plainly broken, not to judge writing quality.
+    """
+    stripped = content.strip()
+
+    if re.search(r"\b(?:your_?\w+_here|placeholder|todo_?here|xxx+|"
+                 r"\w+_prose_here|lorem ipsum)\b", stripped, re.IGNORECASE):
+        return "it is placeholder text, not real content"
+
+    lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
+    if len(lines) >= 6:
+        unique = len(set(lines))
+        if unique <= max(2, len(lines) // 5):
+            return f"it repeats the same {unique} line(s) over and over"
+
+    words = stripped.split()
+    if len(words) >= 40 and len(set(words)) <= len(words) // 6:
+        return "it loops on the same few words"
+
+    return None
 
 
 class LLMCouncil:
@@ -437,6 +464,94 @@ Respond with ONLY this JSON, nothing else:
             # Fail open: an unavailable verifier must never turn a real
             # success into a reported failure.
             return {"satisfied": True, "confidence": 0.0, "reason": f"Verification unavailable: {exc}", "verified": False}
+
+    async def author_file_content(
+        self, description: str, filename: str = ""
+    ) -> Dict[str, Any]:
+        """Write the body of a file the user described rather than quoted.
+
+        "create a file named program.txt with code for a caesar cipher" has
+        no literal content to lift out of it - the content has to be
+        written. Without this the file was created empty.
+
+        The extension steers the format, because a .py that opens with
+        "Here is a Python program:" is broken in a way a .md would not be.
+        """
+        suffix = (filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt")
+        format_note = {
+            "py": "Valid Python only. No markdown fences, no prose outside comments.",
+            "js": "Valid JavaScript only. No markdown fences, no prose around it.",
+            "html": "A complete valid HTML document. No markdown fences.",
+            "css": "Valid CSS only. No markdown fences.",
+            "json": "Valid JSON only, nothing else.",
+            "sh": "A valid shell script. No markdown fences.",
+            "md": "Markdown prose.",
+            "csv": "Comma-separated rows only, with a header row.",
+        }.get(suffix, "")
+
+        if not format_note:
+            # The extension is not always the honest signal. "program.txt
+            # with code for a caesar cipher" is a .txt asking for code, and
+            # trusting the extension produced a paragraph ABOUT a cipher
+            # instead of a cipher.
+            wants_code = re.search(
+                r"\b(?:code|program|script|function|class|algorithm|"
+                r"implementation)\b", description, re.IGNORECASE)
+            if wants_code:
+                format_note = (
+                    "Working, runnable code. Write the actual implementation - "
+                    "not a description of it, not a placeholder, and not a note "
+                    "explaining what you did not write. No markdown fences.")
+            else:
+                format_note = "Plain text prose."
+
+        prompt = f"""Write the contents of a file.
+
+The user asked for: {description}
+Filename: {filename or "(unspecified)"}
+
+Format: {format_note}
+
+Write the COMPLETE contents of that file - it is written to disk exactly
+as you give it, so anything that is not meant to be in the file must not
+appear. Do not explain what you wrote, do not wrap it in code fences, and
+do not leave anything out or describe it as unimplemented. Whatever was
+asked for must actually be there, in full.
+
+Respond with ONLY this JSON, nothing else:
+{{"content": "the full file contents"}}"""
+
+        try:
+            response, used_model = await self._generate_with_fallbacks(
+                "executor", prompt, options={"num_predict": 1200}
+            )
+            result = self._parse_response(response["response"])
+            content = str((result or {}).get("content", ""))
+            if not content.strip():
+                return {"success": False, "error": "The model returned no content."}
+
+            problem = _degenerate_output(content)
+            if problem:
+                # A 3B model asked for real code will sometimes emit
+                # placeholder soup - "plaintext_prose_here" over and over.
+                # Writing that to the user's file is worse than admitting
+                # the model could not do it.
+                logger.warning("Rejected authored content: {}", problem)
+                return {
+                    "success": False,
+                    "error": (f"The local model could not write usable content "
+                              f"({problem}). It is a 3B model - complex code is "
+                              "past what it does reliably."),
+                }
+
+            return {
+                "success": True,
+                "content": content,
+                "model": used_model,
+            }
+        except Exception as exc:
+            logger.warning("Could not author file content: {}", str(exc))
+            return {"success": False, "error": str(exc)}
 
     async def summarize_findings(self, topic: str, raw_text: str) -> Dict[str, Any]:
         """Turn raw scraped page text into an actual synthesized summary.

@@ -484,7 +484,20 @@ class AutonomousSystemController:
     _tts_engine = None
 
     def _speak_text(self, text: str):
-        """Speak text aloud.
+        """Hand text to the speech queue. Returns immediately.
+
+        The actual synthesis happens on core.speech's dedicated thread, so
+        a slow voice server or a stuck audio device can no longer hold up
+        the interactive prompt - which is what it used to do.
+        """
+        if not self.voice_enabled:
+            return
+        from core import speech
+        speech.configure(self._synthesise_speech)
+        speech.say(text)
+
+    def _synthesise_speech(self, text: str):
+        """Actually produce sound. Only ever called on the speech thread.
 
         Primary: Windows SAPI via pyttsx3 - instant, never truncates.
         Fallback: piper TTS through the voice server (higher quality,
@@ -520,7 +533,10 @@ class AutonomousSystemController:
             response = requests.post(
                 f"{self.voice_service_url}/speak",
                 json={"text": text},
-                timeout=60,
+                # Was 60. Nothing about one spoken sentence justifies
+                # waiting a minute, and this now runs on the speech thread
+                # where a long wait silently delays later utterances.
+                timeout=15,
             )
             if response.status_code != 200:
                 logger.warning("Voice server speak failed: %s", response.status_code)
@@ -5172,7 +5188,27 @@ class AutonomousSystemController:
         "note", "text", "please", "me", "to", "for", "write", "generate",
     )
 
-    @staticmethod
+    # Verbs that mean "compose this for me" rather than "copy what I said".
+    _AUTHORING_RE = re.compile(
+        r"\b(?:with|containing|that|which|to)\b[\w\s]{0,20}?"
+        r"\b(?:code|program|script|function|class|essay|poem|story|letter|"
+        r"summary|notes?|list|recipe|explanation|example|template|report|"
+        r"documentation|readme|tutorial|guide)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _wants_authored_content(cls, text: str) -> bool:
+        """Did the user describe content to be written, not quoted?
+
+        "with content hello world" is a quote - _extract_inline_content
+        handles that. "with code for a caesar cipher" is a commission, and
+        used to produce a zero-byte file.
+        """
+        if not text:
+            return False
+        return bool(cls._AUTHORING_RE.search(text))
+
     @staticmethod
     def _extract_inline_content(text: str) -> str:
         """Recover file body text embedded in the request sentence.
@@ -5267,20 +5303,42 @@ class AutonomousSystemController:
         if action_type in ("create_file",):
             description = params.get("description") or params.get("context") or ""
             path = params.get("path") or self._derive_filename(description or "vega_note.txt")
+            authoring_error = None
             content = params.get("content")
             if content in (None, ""):
                 # The planner often puts the body in the sentence rather than
                 # in a "content" param, so files were created 0 bytes and
                 # reported as done. Recover it before writing nothing.
                 content = self._extract_inline_content(description)
+            if not str(content or "").strip() and self._wants_authored_content(description):
+                # Nothing to copy, but the user described content they want
+                # WRITTEN. That is the model's job, not a regex's.
+                authored = await self.council.author_file_content(
+                    description, str(path))
+                if authored.get("success"):
+                    content = authored["content"]
+                else:
+                    authoring_error = authored.get("error")
             result = file_agent.create_file(path, content or "")
             if result.get("success") and not (content or "").strip():
-                # Be explicit rather than claiming a clean success: an empty
-                # file is almost never what the user meant.
-                result["warning"] = (
-                    f"Created {path}, but I could not work out what to put in it, "
-                    "so it is empty. Tell me the content and I will fill it."
-                )
+                if authoring_error:
+                    # Content was the point of the request and it did not
+                    # happen. An empty file is not a success here, whatever
+                    # the filesystem reports.
+                    result["success"] = False
+                    result["error"] = (
+                        f"Created {path} but could not write the content you "
+                        f"asked for: {authoring_error}"
+                    )
+                    result["empty_file_left_at"] = str(path)
+                else:
+                    # Be explicit rather than claiming a clean success: an
+                    # empty file is almost never what the user meant.
+                    result["warning"] = (
+                        f"Created {path}, but I could not work out what to put "
+                        "in it, so it is empty. Tell me the content and I will "
+                        "fill it."
+                    )
             return result
 
         if "organize" in action_type:
@@ -6000,9 +6058,14 @@ class AutonomousSystemController:
                         result = await self.process_command(command)
                     self._display_result(result)
                     if self.voice_enabled:
-                        # Speech synthesis blocks for the length of the
-                        # sentence - keep it off the loop.
-                        await asyncio.to_thread(self._speak_result, result)
+                        # Queued, not awaited. This used to be
+                        # `await asyncio.to_thread(self._speak_result, ...)`
+                        # with no timeout, behind a 60-second HTTP call and
+                        # a winsound.PlaySound that has no timeout at all -
+                        # so any stall in the speech path froze the prompt
+                        # permanently and the session stopped accepting
+                        # input. Speech is cosmetic; the prompt is not.
+                        self._speak_result(result)
 
                 except KeyboardInterrupt:
                     # In voice mode Ctrl+C means "stop listening", not "quit".
@@ -6036,6 +6099,10 @@ class AutonomousSystemController:
     async def shutdown(self):
         """Release external resources held for the life of the session.
 
+        The speech thread is stopped first and with a short join, so a
+        stuck utterance cannot hold up the exit the way it used to hold up
+        the prompt.
+
         BrowserDriver.stop() had no caller anywhere in the repo, so the
         Playwright Chromium process, its Node supervisor and (with the
         persistent profile) a locked profile directory leaked on every exit.
@@ -6043,6 +6110,12 @@ class AutonomousSystemController:
         so `.keys()` reflects what exists rather than constructing more on
         the way out.
         """
+        try:
+            from core import speech
+            speech.shutdown()
+        except Exception:
+            pass
+
         try:
             if "web" in self.agents.keys():
                 driver = getattr(self.agents["web"], "browser_driver", None)
