@@ -376,19 +376,47 @@ class AutonomousSystemController:
             )
             print("Listening (speak, then pause)...")
             frames = []
+            speech_detected = False
+            sample_width = pa.get_sample_size(pyaudio.paInt16)
             try:
                 frame_ms = 1000.0 * 1024 / rate  # ~64ms per 1024-sample frame
                 silence_frame_limit = max(1, int(silence_ms / frame_ms))
-                calibration_frames = 5  # ~320ms noise-floor estimate
 
-                noise_floor = 0.0
+                # The stream returns silence for the first frames after
+                # open(). Measuring those was the whole problem: the noise
+                # floor came out near zero, so the threshold fell back to a
+                # constant that sat BELOW this room's ambient peaks.
+                warmup_frames = 8            # ~0.5s of stream spin-up
+                calibration_frames = 12      # ~0.75s of actual room
+
+                for _ in range(warmup_frames):
+                    stream.read(1024, exception_on_overflow=False)
+
+                ambient = []
                 for _ in range(calibration_frames):
-                    noise_floor = max(noise_floor, self._rms_energy(stream.read(1024, exception_on_overflow=False)))
+                    ambient.append(self._rms_energy(
+                        stream.read(1024, exception_on_overflow=False)))
+                ambient.sort()
 
-                threshold = max(noise_floor * 2.5, 300.0)
-                speech_detected = False
+                # Median, not max - one keyboard click must not poison the
+                # threshold for the whole utterance.
+                noise_floor = ambient[len(ambient) // 2]
+                ambient_peak = ambient[-1]
+
+                # Clear the room's own peaks, and require a real margin over
+                # its typical level. The 300 floor stays only as a guard for
+                # a genuinely silent input.
+                threshold = max(noise_floor * 3.0, ambient_peak * 1.4, 300.0)
+                logger.info(
+                    "Voice: ambient median={:.0f} peak={:.0f} -> threshold={:.0f}",
+                    noise_floor, ambient_peak, threshold,
+                )
+
+                # Hysteresis: one loud frame is a door slam, not speech.
+                loud_run = 0
+                frames_to_start = 2
                 silent_frames_after_speech = 0
-                min_frames_before_stop = int(1000 / frame_ms)  # record at least ~1s total
+                min_frames_before_stop = int(1000 / frame_ms)  # ~1s minimum
 
                 total_frames = int(rate / 1024 * duration)
                 for index in range(total_frames):
@@ -396,25 +424,37 @@ class AutonomousSystemController:
                     frames.append(data)
 
                     if self._rms_energy(data) > threshold:
-                        speech_detected = True
+                        loud_run += 1
+                        if loud_run >= frames_to_start:
+                            speech_detected = True
                         silent_frames_after_speech = 0
-                    elif speech_detected and index >= min_frames_before_stop:
-                        silent_frames_after_speech += 1
-                        if silent_frames_after_speech >= silence_frame_limit:
-                            logger.info(
-                                "Voice: end of speech detected after {:.1f}s",
-                                len(frames) * frame_ms / 1000.0,
-                            )
-                            break
+                    else:
+                        loud_run = 0
+                        if speech_detected and index >= min_frames_before_stop:
+                            silent_frames_after_speech += 1
+                            if silent_frames_after_speech >= silence_frame_limit:
+                                logger.info(
+                                    "Voice: end of speech detected after {:.1f}s",
+                                    len(frames) * frame_ms / 1000.0,
+                                )
+                                break
             finally:
                 stream.stop_stream()
                 stream.close()
                 pa.terminate()
 
+            if not speech_detected:
+                # Transcribing this produces "[BLANK_AUDIO]" or an invented
+                # sentence. Saying nothing was heard is the honest answer.
+                logger.info("Voice: no speech detected above the noise floor")
+                return None
+
             tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
             with wave.open(tmp_file.name, "wb") as wf:
                 wf.setnchannels(channels)
-                wf.setsampwidth(pa.get_sample_size(pyaudio.paInt16))
+                # Captured BEFORE pa.terminate() above - this used to query a
+                # PyAudio instance that had already been torn down.
+                wf.setsampwidth(sample_width)
                 wf.setframerate(rate)
                 wf.writeframes(b"".join(frames))
 
@@ -553,7 +593,10 @@ class AutonomousSystemController:
 
         audio_path = self._record_audio()
         if not audio_path:
-            print("Voice recording failed.")
+            # Not necessarily a failure: the recorder also returns None when
+            # nothing crossed the noise floor, which is the ordinary "you
+            # didn't say anything" case. The caller's silence-streak handling
+            # takes it from here.
             return None
 
         try:
