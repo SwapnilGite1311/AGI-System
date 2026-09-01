@@ -115,6 +115,27 @@ class BrowserDriver:
         except Exception as exc:
             return {"success": False, "error": str(exc), "url": url}
 
+    async def _read_back(self, selector: str) -> Optional[str]:
+        """What the field actually holds now.
+
+        Covers the three shapes a "field" takes: input/textarea (value),
+        select (the selected value), and contenteditable (text content).
+        Returns None when it cannot be read, which is itself a failure to
+        verify rather than a pass.
+        """
+        try:
+            return await self.page.input_value(selector, timeout=2000)
+        except Exception:
+            pass
+        try:
+            return await self.page.eval_on_selector(
+                selector,
+                "el => el.value !== undefined && el.value !== null"
+                " ? el.value : (el.textContent || '')",
+            )
+        except Exception:
+            return None
+
     async def fill_fields(self, field_map: Dict[str, str], submit_selector: Optional[str] = None) -> Dict[str, object]:
         """Fill fields using selector keys in field_map.
 
@@ -134,7 +155,12 @@ class BrowserDriver:
                     try:
                         # Playwright accepts CSS selectors and 'xpath=..' selectors
                         await self.page.fill(selector, value)
-                        filled.append({"selector": selector, "value": value})
+                        landed = await self._read_back(selector)
+                        if landed != value:
+                            raise RuntimeError(
+                                f"value did not stick (field holds {landed!r})")
+                        filled.append({"selector": selector, "value": value,
+                                       "verified": True})
                         last_exc = None
                         break
                     except Exception as exc:
@@ -142,7 +168,12 @@ class BrowserDriver:
                         try:
                             await self.page.click(selector)
                             await self.page.type(selector, value)
-                            filled.append({"selector": selector, "value": value})
+                            landed = await self._read_back(selector)
+                            if landed != value:
+                                raise RuntimeError(
+                                    f"value did not stick (field holds {landed!r})")
+                            filled.append({"selector": selector, "value": value,
+                                           "verified": True})
                             last_exc = None
                             break
                         except Exception as exc2:
@@ -150,7 +181,16 @@ class BrowserDriver:
                     attempt += 1
 
                 if last_exc:
-                    return {"success": False, "error": f"Failed to fill {selector}: {str(last_exc)}"}
+                    # Report what DID land. A half-filled form is a real
+                    # state the user has to know about - returning only the
+                    # error left them thinking nothing had been typed.
+                    return {
+                        "success": False,
+                        "error": f"Failed to fill {selector}: {str(last_exc)}",
+                        "filled": filled,
+                        "failed_selector": selector,
+                        "partial": bool(filled),
+                    }
 
             if submit_selector:
                 try:
@@ -169,7 +209,15 @@ class BrowserDriver:
                 pass
 
             content = await self.page.content()
-            return {"success": True, "filled": filled, "page_content": content}
+            return {
+                "success": True,
+                "filled": filled,
+                # Every entry in `filled` was read back and matched. Without
+                # this, "filled" meant "fill() did not raise", which is a
+                # much weaker claim than it appears.
+                "verified": all(f.get("verified") for f in filled),
+                "page_content": content,
+            }
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 

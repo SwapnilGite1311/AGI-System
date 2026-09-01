@@ -13,8 +13,33 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from docx import Document
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from loguru import logger
+
+
+def _verify_written(target: Path, reopen) -> Optional[str]:
+    """Confirm a written document is actually usable.
+
+    Returns None when the file is fine, or a description of what is wrong.
+    Saving raises on most failures, but not all of them: a zero-byte file
+    or one that cannot be re-opened is a real outcome that used to be
+    reported as success.
+    """
+    try:
+        if not target.exists():
+            return f"{target} was reported written but is not on disk"
+        size = target.stat().st_size
+        if size == 0:
+            return f"{target} was written but is empty"
+    except OSError as exc:
+        return f"{target} could not be inspected after writing: {exc}"
+
+    try:
+        reopen(str(target))
+    except Exception as exc:
+        return (f"{target} was written but cannot be re-opened "
+                f"({type(exc).__name__}: {exc})")
+    return None
 
 
 def create_word_document(
@@ -48,8 +73,20 @@ def create_word_document(
                 document.add_paragraph(str(section))
 
         document.save(str(target))
+
+        problem = _verify_written(target, Document)
+        if problem:
+            logger.error("Word document verification failed: {}", problem)
+            return {"success": False, "error": problem, "path": str(target)}
+
         logger.success("Created Word document: {}", target)
-        return {"success": True, "path": str(target), "sections": len(sections)}
+        return {
+            "success": True,
+            "path": str(target),
+            "sections": len(sections),
+            "size": target.stat().st_size,
+            "verified": True,
+        }
     except Exception as exc:
         logger.error("Word document creation failed: {}", str(exc))
         return {"success": False, "error": str(exc)}
@@ -79,8 +116,20 @@ def create_spreadsheet(
             sheet.append(row)
 
         workbook.save(str(target))
+
+        problem = _verify_written(target, load_workbook)
+        if problem:
+            logger.error("Spreadsheet verification failed: {}", problem)
+            return {"success": False, "error": problem, "path": str(target)}
+
         logger.success("Created spreadsheet: {}", target)
-        return {"success": True, "path": str(target), "rows": len(rows)}
+        return {
+            "success": True,
+            "path": str(target),
+            "rows": len(rows),
+            "size": target.stat().st_size,
+            "verified": True,
+        }
     except Exception as exc:
         logger.error("Spreadsheet creation failed: {}", str(exc))
         return {"success": False, "error": str(exc)}
