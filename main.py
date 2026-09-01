@@ -1705,6 +1705,28 @@ class AutonomousSystemController:
         matched before the catch-all. Returns None for anything that is not
         an unambiguous structured request, so every other tier is untouched.
         """
+        # --- what is using the memory / CPU ----------------------------------
+        heavy = re.search(
+            # "whats" with no apostrophe is how it actually gets typed.
+            r"\b(?:what(?:'?s| is| are)?|which|show|list|tell\s+me)\b[\w\s]{0,30}?"
+            r"\b(?:hogging|eating|using|consuming|taking|hyping)\b"
+            r"[\w\s]{0,20}?\b(?P<what>memory|ram|cpu|processor)\b",
+            command, re.IGNORECASE,
+        )
+        if not heavy:
+            heavy = re.search(
+                r"\b(?:top|biggest|heaviest|largest)\b[\w\s]{0,20}?"
+                r"\b(?:process|processes|app|apps|program|programs)\b"
+                r"[\w\s]{0,20}?\b(?P<what>memory|ram|cpu|processor)\b",
+                command, re.IGNORECASE,
+            )
+        if heavy:
+            kind = heavy.group("what").lower()
+            return {
+                "type": "top_processes",
+                "by": "cpu" if kind in ("cpu", "processor") else "memory",
+            }
+
         # --- arithmetic ------------------------------------------------------
         # "what is 17 percent of 4500" was taking ~12 seconds because it
         # went to a language model. It is arithmetic. The sandbox evaluator
@@ -2914,9 +2936,12 @@ class AutonomousSystemController:
                 "path": self._extract_known_path(normalized),
             }
 
-        if "organize" in normalized and any(
-            word in normalized for word in ["desktop", "download", "document", "folder"]
-        ):
+        # "tidy up my downloads folder" means the same thing as "organize"
+        # it, and was the phrasing that actually got used.
+        if any(verb in normalized for verb in
+               ("organize", "organise", "tidy", "clean up", "sort out", "declutter")) \
+                and any(word in normalized for word in
+                        ["desktop", "download", "document", "folder", "directory"]):
             return {
                 "type": "organize_folder",
                 "path": self._extract_known_path(normalized),
@@ -3839,6 +3864,9 @@ class AutonomousSystemController:
                 ),
             }
 
+        elif intent_type == "top_processes":
+            step_result = self._top_processes(intent.get("by", "memory"))
+
         elif intent_type == "calculate":
             from core.sandbox import evaluate_expression
             step_result = evaluate_expression(intent.get("expression", ""))
@@ -4519,6 +4547,34 @@ class AutonomousSystemController:
         if len(text) > 120:
             return None
         return text
+
+    def _top_processes(self, by: str = "memory", limit: int = 8) -> Dict[str, Any]:
+        """The processes actually using the machine right now.
+
+        SystemAgent.list_processes already reported memory_percent; there
+        was simply no phrasing that reached it, so "whats hogging the
+        memory" went to a language model that cannot see the process table.
+        """
+        key = "cpu" if by == "cpu" else "memory"
+        try:
+            processes = self.agents["system"].list_processes()
+        except Exception as exc:
+            return {"success": False, "error": f"Could not read the process list: {exc}"}
+
+        if not processes:
+            return {"success": False, "error": "The process list came back empty."}
+
+        ranked = sorted(
+            processes, key=lambda p: (p.get(key) or 0), reverse=True
+        )[:limit]
+
+        # No "message" here on purpose: _display_step_result renders the
+        # ranked list itself, and returning both printed it twice.
+        return {
+            "success": True,
+            "ranked_by": key,
+            "processes": ranked,
+        }
 
     def _open_named_folder(self, folder: Optional[str]) -> Dict[str, Any]:
         """Open a folder in the file explorer.
@@ -6129,9 +6185,25 @@ class AutonomousSystemController:
         """Display individual step results with informative explanations."""
         
         if "processes" in step_result:
-            print("\nSystem Processes:")
-            for process in step_result["processes"][:10]:
-                print(f"  - {process['name']} (PID: {process['pid']}, CPU: {process['cpu']}%)")
+            # Show the column the user asked about. This always printed CPU,
+            # so asking what was using the MEMORY produced a list of
+            # "CPU: 0.0%" next to a ranking it did not explain.
+            ranked_by = step_result.get("ranked_by")
+            if ranked_by == "memory":
+                print("\nTop processes by memory:")
+                for process in step_result["processes"][:10]:
+                    print(f"  - {process['name']} (PID: {process['pid']}, "
+                          f"memory: {process.get('memory', 0):.1f}%)")
+            elif ranked_by == "cpu":
+                print("\nTop processes by CPU:")
+                for process in step_result["processes"][:10]:
+                    print(f"  - {process['name']} (PID: {process['pid']}, "
+                          f"CPU: {process.get('cpu', 0):.1f}%)")
+            else:
+                print("\nSystem Processes:")
+                for process in step_result["processes"][:10]:
+                    print(f"  - {process['name']} (PID: {process['pid']}, "
+                          f"CPU: {process['cpu']}%)")
 
         elif "files" in step_result:
             print(f"\nFiles Found ({len(step_result['files'])} total):")
@@ -6235,6 +6307,7 @@ class AutonomousSystemController:
         "steps_completed", "subtask_description", "message", "warning",
         "url", "error", "timestamp", "executed_at", "advisory", "accepted",
         "reason", "confidence", "raw_route", "verification_warning",
+        "ranked_by",
     })
 
     # Keys the explicit branches above already render.

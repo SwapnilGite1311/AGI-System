@@ -125,19 +125,51 @@ class SystemAgent:
 
     # ============= PROCESS MANAGEMENT =============
 
-    def list_processes(self, filter_name: str = None) -> List[Dict[str, Any]]:
-        """List running processes, optionally filtered by name."""
+    def list_processes(
+        self,
+        filter_name: str = None,
+        cpu_interval: float = 0.25,
+    ) -> List[Dict[str, Any]]:
+        """List running processes, optionally filtered by name.
+
+        `cpu` is the share of the WHOLE machine each process is using right
+        now, as a percentage.
+
+        Two details matter here and both were previously wrong. psutil's
+        cpu_percent returns the average since the process started on the
+        first call for that process, so a single pass reports history, not
+        the present - that is how "System Idle Process 1264.1%" appeared.
+        And psutil sums across cores, so the raw figure is out of
+        100 * core_count rather than 100. So: prime, wait, read, divide.
+
+        Pass cpu_interval=0 to skip the wait when only names, pids or
+        memory are needed.
+        """
+        cores = psutil.cpu_count() or 1
+
+        if cpu_interval:
+            # First pass establishes the baseline each process is measured
+            # against. Its return value is the meaningless one.
+            for proc in psutil.process_iter():
+                try:
+                    proc.cpu_percent(None)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            time.sleep(cpu_interval)
+
         processes = []
-        for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
+        for proc in psutil.process_iter(["pid", "name", "memory_percent"]):
             try:
                 info = proc.info
                 name = info.get("name") or ""
                 if filter_name and filter_name.lower() not in name.lower():
                     continue
+                cpu = proc.cpu_percent(None) if cpu_interval else 0.0
                 processes.append({
                     "pid": info["pid"],
                     "name": name,
-                    "cpu": info["cpu_percent"],
+                    # Share of the whole machine, so it cannot exceed 100.
+                    "cpu": round(cpu / cores, 1),
                     "memory": info["memory_percent"],
                 })
             except (psutil.NoSuchProcess, psutil.AccessDenied):
