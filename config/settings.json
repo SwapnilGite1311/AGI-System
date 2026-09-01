@@ -66,7 +66,8 @@
     "voice_enabled": true,
     "tts_engine": "pyttsx3",
     "stt_model": "whisper",
-    "voice_service_url": "http://localhost:5000"
+    "voice_service_url": "http://localhost:5000",
+    "input_device_index": null
   },
   "security": {
     "encryption_enabled": true,
