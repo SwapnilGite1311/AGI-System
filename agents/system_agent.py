@@ -643,10 +643,23 @@ class SystemAgent:
         try:
             env = os.environ.copy()
             ollama_config = self.config.get("ollama", {})
+            # Assignment, not setdefault. These were setdefault, which does
+            # NOTHING when the variable already exists in the environment -
+            # and both were already set on this machine, to values that
+            # crippled performance:
+            #
+            #   OLLAMA_MAX_LOADED_MODELS=1  only one model may be resident
+            #   OLLAMA_KEEP_ALIVE=0         unload immediately after each call
+            #
+            # Together those guaranteed a reload on every command: the model
+            # answered, the memory system embedded the episode, the embedding
+            # model evicted the language model, and the next command paid 5.5
+            # seconds to load it back. Config must win over a stale
+            # environment, or it is not configuration at all.
             if ollama_config.get("max_loaded_models") is not None:
-                env.setdefault("OLLAMA_MAX_LOADED_MODELS", str(ollama_config["max_loaded_models"]))
+                env["OLLAMA_MAX_LOADED_MODELS"] = str(ollama_config["max_loaded_models"])
             if ollama_config.get("keep_alive") is not None:
-                env.setdefault("OLLAMA_KEEP_ALIVE", str(ollama_config["keep_alive"]))
+                env["OLLAMA_KEEP_ALIVE"] = str(ollama_config["keep_alive"])
             # Detached, in its own process group. As a plain child it shared
             # VEGA's console, so Ctrl+C out of a session killed Ollama too -
             # which is why every session started by restarting it, and why a

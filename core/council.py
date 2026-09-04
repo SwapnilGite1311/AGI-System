@@ -67,6 +67,27 @@ class LLMCouncil:
         self.ollama = AsyncClient(host=ollama_config.get('host', 'http://127.0.0.1:11434'))
         self.ollama_timeout = float(ollama_config.get('timeout', 120))
         self.keep_alive = str(ollama_config.get('keep_alive', '5m'))
+
+        # Single-model mode. Swapping models costs a full reload from disk -
+        # measured at ~7s on this hardware, against 0.27s for a call to a
+        # model that is already resident, and 0.02s of actual generation.
+        # On a machine that cannot hold two models at once, specialised
+        # roles are not worth seven seconds each.
+        # Deliberately NOT inside llm_council: that section is a mapping of
+        # role -> settings, and code that iterates it expects every value to
+        # be a dict. A scalar in there breaks callers at a distance.
+        mode_cfg = self.config.get("council_mode", {})
+        self.single_model_mode = bool(mode_cfg.get("single_model_mode", False))
+        self.primary_model = str(
+            mode_cfg.get("primary_model")
+            or (self.config.get("llm_council", {}).get("chairman", {}) or {}).get("model")
+            or "qwen2.5:3b"
+        )
+        if self.single_model_mode:
+            logger.info(
+                "Council in single-model mode: every role uses {} and it stays "
+                "resident", self.primary_model,
+            )
         self.fallback_chain = list(ollama_config.get('fallback_chain', ['gemma2:2b', 'tinyllama:latest']))
         # num_gpu offloads to GPU when the host has VRAM to spare; 0 forces
         # CPU-only inference. See config/settings.json for the active value.
@@ -125,6 +146,16 @@ class LLMCouncil:
         return self._get_available_memory_gb()
 
     def _select_model_for_member(self, member: str) -> str:
+        if getattr(self, "single_model_mode", False):
+            # One model for every role. Vision is the exception: a text
+            # model cannot read an image, so that role keeps its own and
+            # accepts the reload when a screenshot is actually involved.
+            if member == "vision":
+                return self._original_select_model_for_member(member)
+            return self.primary_model
+        return self._original_select_model_for_member(member)
+
+    def _original_select_model_for_member(self, member: str) -> str:
         """Return the member's configured model.
 
         All configured primaries are small enough to load fully into GPU VRAM,
@@ -398,7 +429,15 @@ ONLY JSON:"""
                 payload = {
                     "model": model,
                     "prompt": prompt,
-                    "keep_alive": keep_alive if keep_alive is not None else self.keep_alive,
+                    # In single-model mode an explicit "0" would unload the
+                    # one model we want resident, reintroducing the 7s reload
+                    # this mode exists to remove.
+                    "keep_alive": (
+                        self.keep_alive
+                        if (keep_alive is None
+                            or getattr(self, "single_model_mode", False))
+                        else keep_alive
+                    ),
                     "options": default_options,
                 }
                 if images:

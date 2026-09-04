@@ -39,7 +39,18 @@ def embed(
     try:
         response = requests.post(
             f"{host}/api/embeddings",
-            json={"model": model, "prompt": text, "keep_alive": keep_alive},
+            json={
+                "model": model,
+                "prompt": text,
+                "keep_alive": keep_alive,
+                # Pinned to CPU. This model is small enough that CPU
+                # embedding is fast, and on a 4GB card keeping it resident
+                # on the GPU evicted the language model - so every command
+                # paid a 6 second reload to answer the NEXT one. Two models
+                # both trying to stay resident is worse than one of them
+                # being slightly slower.
+                "options": {"num_gpu": 0},
+            },
             timeout=timeout,
         )
         if response.status_code != 200:

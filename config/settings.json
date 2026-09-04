@@ -45,7 +45,7 @@
     "host": "http://127.0.0.1:11434",
     "timeout": 120,
     "max_retries": 3,
-    "max_loaded_models": 1,
+    "max_loaded_models": 2,
     "keep_alive": "30m",
     "fallback_chain": [
       "gemma2:2b",
@@ -196,5 +196,9 @@
     "model": "qwen2.5:3b",
     "history_limit": 8,
     "use_local_llm": true
+  },
+  "council_mode": {
+    "single_model_mode": true,
+    "primary_model": "qwen2.5:3b"
   }
 }
