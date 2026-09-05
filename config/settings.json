@@ -82,7 +82,9 @@
     "command_cache_size": 100,
     "direct_pause_seconds": 0.3,
     "decompose_complex_tasks": true,
-    "use_react_loop": true
+    "use_react_loop": true,
+    "use_intent_classifier": true,
+    "intent_classifier_margin": 0.12
   },
   "web_automation": {
     "default_browser": "chrome",

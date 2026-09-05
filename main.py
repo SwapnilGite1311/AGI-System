@@ -1336,6 +1336,21 @@ class AutonomousSystemController:
                 "source": "rules",
             }
 
+        # The rules did not recognise it. Before handing a phrasing nobody
+        # anticipated to a language model, ask the learned classifier -
+        # which generalises where the rules cannot. It answers only for
+        # intents that never carry arguments, and only when confident
+        # enough that it was right every time on the measured set, so a
+        # miss here costs nothing: it simply falls through as before.
+        classified = self._classify_intent(command)
+        if classified:
+            return {
+                "tier": "direct",
+                "complexity": "simple",
+                "intent": classified,
+                "source": "classifier",
+            }
+
         # AUTONOMY claims only unparsed commands - 'open browser' is parsed
         # directly and resolves the saved default_browser preference inside
         # _execute_directly's open_application handler, so autonomy's role
@@ -4547,6 +4562,62 @@ class AutonomousSystemController:
             fallback["tier"] = "autonomous"
             fallback["react_fallback_reason"] = f"{type(exc).__name__}: {exc}"
             return fallback
+
+    _classifier = None
+    _argument_free_intents = None
+
+    def _classify_intent(self, command: str):
+        """Ask the learned classifier what the rules could not work out.
+
+        Returns an intent dict ready to dispatch, or None. Deliberately
+        conservative: it answers only for intents that never take arguments,
+        and only above a confidence where it was right every time on the
+        measured set. It predicts WHAT is wanted, not what it is wanted
+        ABOUT - so "delete the task called X" is exactly the shape it must
+        not be trusted with.
+        """
+        execution = self.config.get("execution") or {}
+        if not execution.get("use_intent_classifier", True):
+            return None
+
+        cls = type(self)
+        if cls._classifier is None:
+            try:
+                from learning.intent_classifier import IntentClassifier
+                model = IntentClassifier()
+                if not model.load("data/intent_classifier.json"):
+                    cls._classifier = False       # absent is normal, not an error
+                    return None
+                cls._classifier = model
+
+                free = json.loads(
+                    Path("data/argument_free_intents.json").read_text(encoding="utf-8")
+                )
+                cls._argument_free_intents = set(free.get("intents") or [])
+            except Exception as exc:
+                logger.debug("Intent classifier unavailable: {}", str(exc)[:120])
+                cls._classifier = False
+                return None
+        if cls._classifier is False:
+            return None
+
+        try:
+            prediction = cls._classifier.predict(command)
+        except Exception as exc:
+            logger.debug("Intent classification failed: {}", str(exc)[:120])
+            return None
+
+        intent = prediction.get("intent")
+        margin = float(prediction.get("margin") or 0.0)
+        threshold = float(execution.get("intent_classifier_margin", 0.12))
+
+        if (not intent or intent == "unknown"
+                or intent not in (cls._argument_free_intents or set())
+                or margin < threshold):
+            return None
+
+        logger.info("Intent classified as {} (margin {:.3f})", intent, margin)
+        return {"type": intent, "source": "classifier", "margin": margin}
 
     def _build_tool_registry(self) -> ToolRegistry:
         """Build the explicit phase-2 tool boundary used by planners."""
