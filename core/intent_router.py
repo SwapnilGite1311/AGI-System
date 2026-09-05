@@ -46,6 +46,12 @@ User: send an email to raj@gmail.com about the invoice
 User: hey what's up
 {"action": "chat", "params": {"reply": "Hey! All systems running smooth."}, "confidence": 0.95}
 
+User: how many tasks did you just show me
+{"action": "chat", "params": {"reply": "<count them from the actions already performed>"}, "confidence": 0.9}
+
+User: where did you save that
+{"action": "chat", "params": {"reply": "<the path from the actions already performed>"}, "confidence": 0.9}
+
 User: search laptops on amazon and create a task to compare prices
 {"plan": [{"action": "site_search", "params": {"site": "amazon.in", "query": "laptops"}}, {"action": "create_task", "params": {"title": "compare laptop prices", "description": "Compare laptops found on Amazon"}}], "confidence": 0.9}
 
@@ -73,6 +79,11 @@ Rules:
   it. Fill parameters from it where sensible.
 - If the message is casual chat (greetings, feelings, questions about you),
   use action "chat" with params {"reply": "<short friendly answer>"}.
+- A question ABOUT WORK ALREADY DONE is also "chat", not a new instruction.
+  "where did you save it", "what did you just do", "how many did you show
+  me", "did that work" are asking about the ACTIONS ALREADY PERFORMED block
+  above - answer from it, do not perform the action again. Re-running a
+  task because someone asked about its result is a real failure mode.
 - If the request is unclear or you cannot confidently pick a tool, use
   action "clarify" with params {"question": "<one short question>"}.
 - NEVER invent tools or parameters that are not listed.

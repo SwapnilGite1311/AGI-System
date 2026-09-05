@@ -1163,6 +1163,10 @@ class AutonomousSystemController:
 
     _ARTIFACT_KEYS = ("path", "filepath", "file_path", "backup_path",
                       "destination", "saved_path", "url", "final_url")
+    # Numbers a follow-up question is likely to ask about. "How many did you
+    # just show me" cannot be answered from a path.
+    _COUNT_KEYS = ("total", "count", "deleted", "killed", "removed", "rows",
+                   "files", "size", "remaining", "sections")
 
     def _record_action(self, command: str, result: Dict[str, Any]) -> None:
         """Remember what was DONE, so the conversation can talk about it.
@@ -1179,6 +1183,7 @@ class AutonomousSystemController:
                 return  # talking is already in the chat history
 
             artifacts = []
+            counts = []
 
             def _harvest(node, depth=0):
                 if depth > 3 or len(artifacts) >= 6:
@@ -1189,6 +1194,20 @@ class AutonomousSystemController:
                         if isinstance(value, str) and value.strip():
                             if value not in artifacts:
                                 artifacts.append(value)
+                    for key in self._COUNT_KEYS:
+                        value = node.get(key)
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            entry = f"{key}={value}"
+                            if entry not in counts:
+                                counts.append(entry)
+                    # A list of records answers "how many" directly.
+                    for key in ("tasks", "projects", "team_members", "processes",
+                                "results", "drives"):
+                        value = node.get(key)
+                        if isinstance(value, list):
+                            entry = f"{key}={len(value)}"
+                            if entry not in counts:
+                                counts.append(entry)
                     for value in node.values():
                         if isinstance(value, (dict, list)):
                             _harvest(value, depth + 1)
@@ -1203,6 +1222,7 @@ class AutonomousSystemController:
                 "succeeded": bool(result.get("success")),
                 "summary": (self._summarize_result(result) or "")[:300],
                 "artifacts": artifacts[:6],
+                "counts": counts[:5],
                 "error": str(result.get("error") or "")[:200],
             })
         except Exception as exc:
@@ -1216,8 +1236,13 @@ class AutonomousSystemController:
         for entry in list(self._recent_actions)[-5:]:
             status = "succeeded" if entry["succeeded"] else "FAILED"
             line = f"- \"{entry['command']}\" -> {status}"
+            detail = []
             if entry["artifacts"]:
-                line += f" (produced: {', '.join(entry['artifacts'][:3])})"
+                detail.append("produced: " + ", ".join(entry["artifacts"][:3]))
+            if entry.get("counts"):
+                detail.append(", ".join(entry["counts"][:3]))
+            if detail:
+                line += f" ({'; '.join(detail)})"
             elif entry["summary"]:
                 line += f" ({entry['summary'][:120]})"
             if not entry["succeeded"] and entry["error"]:
@@ -1533,6 +1558,15 @@ class AutonomousSystemController:
                     # resolution) + semantically similar past commands (so
                     # the model can reuse phrasings that worked before).
                     context_parts = []
+                    # The same record the conversation gets. Without it the
+                    # router could not resolve "where did you save that" -
+                    # it had only a loose summary of the last result, with
+                    # no artifact paths - so it asked for clarification
+                    # about something the system already knew. That is the
+                    # routing half of "it feels like two separate systems".
+                    actions = self._recent_actions_context()
+                    if actions:
+                        context_parts.append("Actions already performed:\n" + actions)
                     last_summary = getattr(self, "_last_execution_summary", "") or ""
                     if last_summary:
                         context_parts.append(last_summary)
@@ -5241,10 +5275,26 @@ class AutonomousSystemController:
         if action_type == "metric" or metric:
             if not metric:
                 return {"success": False, "error": "Which metric? e.g. total_tasks, completed_tasks, productivity_score."}
+
+            value = analytics._get_metric_value(str(metric))
+            if value is None:
+                # The name was invented rather than looked up. Say so, and
+                # say what does exist - answering with a number here is how
+                # "how many world heritage sites" got the answer 0.0 sourced
+                # to task records.
+                known = ", ".join(analytics.KNOWN_METRICS)
+                return {
+                    "success": False,
+                    "metric": metric,
+                    "error": (f"I do not track a metric called {metric!r}. "
+                              f"I can report: {known}."),
+                    "available_metrics": list(analytics.KNOWN_METRICS),
+                }
+
             return {
                 "success": True,
                 "metric": metric,
-                "value": analytics._get_metric_value(str(metric)),
+                "value": value,
                 "source": "live task/project records",
             }
 

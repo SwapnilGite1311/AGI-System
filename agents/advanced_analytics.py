@@ -164,6 +164,14 @@ class AdvancedAnalytics:
                 # Refresh KPI card
                 metric_name = widget.get("metric")
                 value = self._get_metric_value(metric_name)
+                if value is None:
+                    return {
+                        "widget_id": widget.get("id"),
+                        "type": widget_type,
+                        "metric": metric_name,
+                        "error": f"No metric named {metric_name!r}.",
+                        "available_metrics": list(self.KNOWN_METRICS),
+                    }
                 
                 return {
                     "widget_id": widget.get("id"),
@@ -271,8 +279,20 @@ class AdvancedAnalytics:
     def _has_operational_data(self, data: Dict[str, Any]) -> bool:
         return bool(data.get("tasks") or data.get("projects"))
 
-    def _get_metric_value(self, metric_name: str) -> float:
-        """Current value for a metric, computed from real records."""
+    KNOWN_METRICS = (
+        "total_tasks", "completed_tasks", "open_tasks", "total_projects",
+        "team_size", "productivity_score", "project_completion_rate",
+    )
+
+    def _get_metric_value(self, metric_name: str) -> Optional[float]:
+        """Current value for a metric, or None if there is no such metric.
+
+        Returns None rather than 0.0 for an unknown name. A default of zero
+        meant any invented metric got a confident number back: asked about
+        world heritage sites, this returned 0.0 sourced to "live task and
+        project records", which is a fabricated answer to an unanswerable
+        question. Not knowing is a real result and has to be expressible.
+        """
 
         data = self._load_operational_data()
         tasks = data["tasks"]
@@ -291,7 +311,7 @@ class AdvancedAnalytics:
             "productivity_score": round(len(completed) / len(tasks), 3) if tasks else 0.0,
             "project_completion_rate": round(len(done_projects) / len(projects), 3) if projects else 0.0,
         }
-        return metrics.get(metric_name, 0.0)
+        return metrics.get(metric_name)
 
     def _get_chart_data(self, chart_type: str, data_source: str) -> Dict[str, Any]:
         """Chart series built from real task/project records.
