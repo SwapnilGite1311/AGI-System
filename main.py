@@ -1028,7 +1028,32 @@ class AutonomousSystemController:
             # succeeded either did the one thing or didn't. Verifying every
             # single-step result cost ~15s to confirm the obvious.
             steps_total = int(result.get("steps_total") or 0)
-            worth_verifying = steps_total > 1 or bool(result.get("decomposition"))
+            # A COMPOUND request that ran as a SINGLE step is the most
+            # suspicious outcome there is - it means most of what was asked
+            # was silently dropped. "count how many tasks I have and save
+            # that number to a file" executed as one create_task, and was
+            # skipped by the old rule precisely because only one step ran.
+            #
+            # This was originally limited because verification cost ~15s.
+            # It now costs 0.8s, so the trade that justified skipping the
+            # riskiest case no longer holds.
+            # Deliberately broader than the routing predicates. Those are
+            # tuned so a false positive does not wrongly SPLIT a command; a
+            # false positive here just spends 0.8s confirming something
+            # correct, so the net can be wider. "count how many tasks I have
+            # and save that number to a file" passes neither routing test
+            # and is exactly the case worth checking.
+            normalised = self._normalize_command(command)
+            looks_compound = (
+                self._has_unambiguous_sequence_marker(normalised)
+                or self._contains_explicit_sequence(normalised)
+                or (" and " in normalised and len(normalised.split()) >= 7)
+            )
+            worth_verifying = (
+                steps_total > 1
+                or bool(result.get("decomposition"))
+                or (looks_compound and steps_total <= 1)
+            )
 
             if result.get("success") and worth_verifying and tier in {"brain", "autonomous", "sequential", "single_model"}:
                 try:
@@ -1061,6 +1086,22 @@ class AutonomousSystemController:
                         # actions still ran and are still reported; what
                         # changes is that we stop calling it a win.
                         result["outcome_mismatch"] = True
+                        # And it is not a success. The steps ran, but the
+                        # request was not satisfied - which is the whole
+                        # thing this check exists to notice. Leaving
+                        # success=True meant the verifier could correctly
+                        # detect "no count was saved to the file" and the
+                        # result still said OK, so anything reading the
+                        # result programmatically - the learning record, a
+                        # caller, a test - was told the opposite of what the
+                        # check had just concluded.
+                        result["success"] = False
+                        result["partial_work_done"] = True
+                        if reason and not result.get("error"):
+                            result["error"] = (
+                                f"I did something, but it does not look like "
+                                f"what you asked for: {reason}"
+                            )
 
             self._cache_command_strategy(command, strategy, result)
             self._record_learning(command, strategy, result)
@@ -6745,6 +6786,23 @@ class AutonomousSystemController:
                 for suggestion in suggestions[:5]:
                     print(f"  - {suggestion}")
             print()
+            return
+
+        if result.get("outcome_mismatch"):
+            # Checked before success, because a flagged mismatch is now
+            # reported as a failure - this branch used to live under the
+            # success test and had become unreachable. Showing WHAT was
+            # done matters more here than anywhere else: something happened
+            # to the user's machine and they need to know what.
+            print("\nI did something, but I don't think it's what you asked for.")
+            if result.get("verification_warning") or result.get("error"):
+                print(f"  {result.get('verification_warning') or result.get('error')}")
+            steps = result.get("results") or []
+            if steps:
+                print("\n  What I actually did:")
+                for step_result in steps:
+                    self._display_step_result(step_result)
+            print("\nWant me to try again differently?\n")
             return
 
         if result.get("success"):
