@@ -6940,6 +6940,14 @@ class AutonomousSystemController:
             elif isinstance(value, dict):
                 print(f"\n{label}:")
                 for sub_key, sub_value in list(value.items())[:20]:
+                    # An empty field is not information. Creating a task
+                    # printed "Due Date: None", "Project Id: None",
+                    # "Completed At: None" - internal nulls shown to a
+                    # person as though they meant something.
+                    if sub_value in (None, "", [], {}):
+                        continue
+                    if sub_key in self._NOISE_KEYS:
+                        continue
                     if isinstance(sub_value, (dict, list)):
                         sub_value = self._summarise_item(sub_value)
                     print(f"  {sub_key.replace('_', ' ').title()}: {sub_value}")

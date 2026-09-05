@@ -386,7 +386,10 @@ class SystemAgent:
             pass
         # Remember the miss so the next lookup does not rescan the disk.
         self._missing_apps.add(app_key)
-        logger.warning("Application not found: {}", app_name)
+        # Diagnostic, not a message for the user: the caller returns a clear
+        # error naming what IS installed. At WARNING this printed
+        # "Application not found: chrome" over the top of it.
+        logger.debug("Application not found: {}", app_name)
         return None
 
     def _resolve_application_executable(self, app_name: str) -> Optional[str]:
@@ -509,7 +512,7 @@ class SystemAgent:
                                  "started when I asked Windows to open it.")
                         if alternatives:
                             error += f" You do have: {', '.join(alternatives)}."
-                        logger.warning("start fallback produced no process for {}", app_name)
+                        logger.debug("start fallback produced no process for {}", app_name)
                         return {
                             "success": False,
                             "application": app_name,
