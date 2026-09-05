@@ -4508,6 +4508,28 @@ class AutonomousSystemController:
             except Exception as exc:
                 logger.debug("Agent warm-up skipped: {}", str(exc)[:120])
 
+            # Make the language model resident too. Loading it costs about
+            # five seconds off disk, and whoever asks the first question
+            # that needs it should not be the one who pays that. One tiny
+            # generation is enough to bring it in and keep it there.
+            try:
+                import requests
+                ollama_cfg = self.config.get("ollama") or {}
+                model = ((self.config.get("council_mode") or {}).get("primary_model")
+                         or (self.config.get("conversation") or {}).get("model"))
+                if not model:
+                    return
+                requests.post(
+                    f"{ollama_cfg.get('host', 'http://127.0.0.1:11434')}/api/generate",
+                    json={"model": model, "prompt": "hi", "stream": False,
+                          "keep_alive": str(ollama_cfg.get("keep_alive", "30m")),
+                          "options": {"num_predict": 1}},
+                    timeout=90,
+                )
+                logger.debug("Language model warmed and resident")
+            except Exception as exc:
+                logger.debug("Model warm-up skipped: {}", str(exc)[:120])
+
         threading.Thread(target=_warm, name="agent-warmup", daemon=True).start()
 
     def _react_loop_enabled(self) -> bool:
