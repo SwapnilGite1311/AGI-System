@@ -283,6 +283,9 @@ class WebAgent:
     ) -> Dict[str, Any]:
         """Open a URL in the requested browser, with explicit fallback reporting."""
 
+        from core import progress
+        progress.update("Opening the page")
+
         target_url = self._normalize_url(url)
         browser = browser_name or self.default_browser
         # Set when Playwright could not load the page. Everything below only
@@ -689,6 +692,9 @@ class WebAgent:
                 "fields_filled": [],
                 "fill_method": "refused_no_dom",
             }
+
+        from core import progress
+        progress.update("Filling the form")
 
         analysis = await self.analyze_form(form_name=form_name)
         field_sequence = self._build_field_sequence(field_values, analysis if analysis.get("success") else {})

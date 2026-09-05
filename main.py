@@ -710,6 +710,18 @@ class AutonomousSystemController:
 
     async def process_command(self, command: str) -> Dict[str, Any]:
         """Process a natural-language command through VEGA with graceful error handling."""
+        from core import progress
+
+        progress.start("Thinking")
+        try:
+            return await self._process_command_inner(command)
+        finally:
+            # Always, on every path. A status line left spinning after an
+            # exception is worse than none at all.
+            progress.stop()
+
+    async def _process_command_inner(self, command: str) -> Dict[str, Any]:
+        from core import progress
 
         logger.info("Processing command: {}", command[:100])
         command = self._resolve_pending_clarification(command)
@@ -723,6 +735,17 @@ class AutonomousSystemController:
         try:
             tier = strategy["tier"]
             complexity = strategy["complexity"]
+
+            # Say what is actually about to happen, in the user's terms.
+            progress.update({
+                "direct": "Working on it",
+                "brain": "Working out what you mean",
+                "conversation": "Thinking",
+                "autonomous": "Planning the steps",
+                "sequential": "Working through the steps",
+                "react": "Working through the steps",
+                "clarify": "Thinking",
+            }.get(tier, "Working on it"))
 
             critical_rejection = None
             # Every tier, not just direct/brain. The benchmark caught
