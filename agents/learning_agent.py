@@ -3,6 +3,7 @@ Learning Agent - command history, successful pattern reuse, and form memory.
 """
 
 import json
+import threading
 import time
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -26,7 +27,12 @@ class LearningAgent:
 
     def __init__(self, config_path: str = "./config/settings.json"):
         self.project_root = Path(config_path).resolve().parent.parent
-        self._last_model_refresh = 0.0
+        # Starts NOW, not at zero. The throttle below asks
+        # "now - last >= 300", and with last=0.0 that compares against the
+        # epoch, so it was always true on a session's first command - every
+        # session paid a full retrain on the first thing the user typed.
+        self._last_model_refresh = time.time()
+        self._refresh_thread: Optional[threading.Thread] = None
 
         self.config = load_config(config_path)
         data_path = self._resolve_project_path(self.config["paths"]["data"])
@@ -126,9 +132,32 @@ class LearningAgent:
         now = time.time()
         if now - getattr(self, "_last_model_refresh", 0.0) >= self.REFRESH_INTERVAL:
             self._last_model_refresh = now
-            self._refresh_adaptive_state()
-            self._refresh_phase5_state()
+            self._start_background_refresh()
         return experience
+
+    def _start_background_refresh(self) -> None:
+        """Retrain off the request path.
+
+        The retrain is 15-35s of CPU-bound pure-Python work. Running it
+        inline meant one instruction in every five minutes randomly took
+        half a minute, for work that had nothing to do with it. Nothing
+        blocks on the result - the model is advisory - so it can land when
+        it lands.
+        """
+        existing = getattr(self, "_refresh_thread", None)
+        if existing is not None and existing.is_alive():
+            return  # one at a time; skipping is better than queueing
+
+        def _run():
+            try:
+                self._refresh_adaptive_state()
+                self._refresh_phase5_state()
+            except Exception as exc:
+                logger.debug("Background model refresh failed: {}", str(exc)[:120])
+
+        self._refresh_thread = threading.Thread(
+            target=_run, name="model-refresh", daemon=True)
+        self._refresh_thread.start()
 
     def get_recent_commands(self, limit: int = 10) -> List[Dict[str, Any]]:
         return self.replay.recent(limit)

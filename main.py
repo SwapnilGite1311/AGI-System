@@ -10,6 +10,7 @@ import os
 import re
 import struct
 import subprocess
+import threading
 import sys
 import tempfile
 import time
@@ -258,6 +259,7 @@ class AutonomousSystemController:
         self._critical_gate_bypass: Optional[str] = None
 
         logger.success("All systems initialized")
+        self._warm_up_lazy_agents()
         logger.info("=" * 60)
 
     def _setup_logging(self):
@@ -4411,6 +4413,27 @@ class AutonomousSystemController:
             return "web"
         return "general"
 
+    def _warm_up_lazy_agents(self) -> None:
+        """Build the expensive agents in the background, off the request path.
+
+        The learning agent's import chain ends at PyTorch, roughly ten
+        seconds. Lazily loading it kept that cost out of startup, which was
+        right - but it moved the cost onto whoever typed the first
+        instruction, which is worse, because they are waiting and startup is
+        not.
+
+        This pays it in the gap where nobody is waiting. Purely an
+        optimisation: if the user gets there first the normal lazy path
+        still runs, and nothing anywhere depends on this having completed.
+        """
+        def _warm():
+            try:
+                self.agents["learning"]
+            except Exception as exc:
+                logger.debug("Agent warm-up skipped: {}", str(exc)[:120])
+
+        threading.Thread(target=_warm, name="agent-warmup", daemon=True).start()
+
     def _build_tool_registry(self) -> ToolRegistry:
         """Build the explicit phase-2 tool boundary used by planners."""
 
@@ -5880,7 +5903,7 @@ class AutonomousSystemController:
             remote_queue.mark_failed(remote_task["id"], f"{type(exc).__name__}: {exc}")
             print(f"[REMOTE] Failed: {exc}")
 
-    async def _memory_maintenance_worker(self, initial_delay: float = 20.0, interval: float = 300.0):
+    async def _memory_maintenance_worker(self, initial_delay: float = 90.0, interval: float = 300.0):
         """Background upkeep for episodic memory: prune, then backfill
         embeddings for older episodes in bounded batches.
 
@@ -5890,7 +5913,9 @@ class AutonomousSystemController:
         feature was added (audit M-1), and the episodes table grew unbounded
         (M-4).
         """
-        await asyncio.sleep(initial_delay)  # let startup settle first
+        # 90s, not 20. At 20 it began mid-way through the user's FIRST
+        # instruction and competed with it for the model.
+        await asyncio.sleep(initial_delay)
         while self.running:
             try:
                 await asyncio.to_thread(self.memory.prune_episodes)
@@ -5898,7 +5923,10 @@ class AutonomousSystemController:
                 # most recalls silently fell back to the LIKE scan (audit
                 # L-3). This runs off-loop in a thread, so a larger batch
                 # costs nothing interactive.
-                result = await asyncio.to_thread(self.memory.backfill_episode_embeddings, 300)
+                result = await asyncio.to_thread(
+                    self.memory.backfill_episode_embeddings, 300,
+                    lambda: getattr(self, "_command_in_flight", False),
+                )
                 if result.get("remaining", 0) == 0 and result.get("embedded", 0) == 0:
                     # Nothing left to do - back off to a slow heartbeat.
                     await asyncio.sleep(interval * 4)
@@ -6077,7 +6105,13 @@ class AutonomousSystemController:
                         continue
 
                     async with self._command_lock:
-                        result = await self.process_command(command)
+                        # Tells background upkeep to stand aside; catching up
+                        # on history must never make someone wait.
+                        self._command_in_flight = True
+                        try:
+                            result = await self.process_command(command)
+                        finally:
+                            self._command_in_flight = False
                     self._display_result(result)
                     if self.voice_enabled:
                         # Queued, not awaited. This used to be

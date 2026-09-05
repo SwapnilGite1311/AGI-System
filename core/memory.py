@@ -7,6 +7,7 @@ Memory System - Multi-layer memory for the AGI
 
 import json
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -633,7 +634,9 @@ class MemorySystem:
 
         return self._recall_similar_episodes_keyword(task, limit)
 
-    def backfill_episode_embeddings(self, batch_limit: int = 200) -> Dict[str, Any]:
+    def backfill_episode_embeddings(
+        self, batch_limit: int = 200, pause_check=None,
+    ) -> Dict[str, Any]:
         """Embed recent episodes that predate the embeddings table.
 
         Semantic recall JOINs episodes to episode_embeddings, so episodes
@@ -656,6 +659,18 @@ class MemorySystem:
 
         embedded = 0
         for episode_id, task in rows:
+            # Yield to real work. `pause_check` returns True while a user
+            # command is being handled; catching up on history is never
+            # worth making someone wait.
+            if pause_check is not None:
+                waited = 0.0
+                while pause_check() and waited < 30.0:
+                    time.sleep(0.25)
+                    waited += 0.25
+                if pause_check():
+                    return {"embedded": embedded, "remaining": len(rows) - embedded,
+                            "paused": True}
+
             vector = embed(task, host=self.embedding_host, model=self.embedding_model)
             if not vector:
                 break  # model unavailable - stop rather than spin
