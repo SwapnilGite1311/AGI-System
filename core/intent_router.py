@@ -87,6 +87,13 @@ Rules:
 - If the request is unclear or you cannot confidently pick a tool, use
   action "clarify" with params {"question": "<one short question>"}.
 - NEVER invent tools or parameters that are not listed.
+- NEVER invent an identifier. If a step needs an id you were not given and
+  cannot see in the context, the plan is wrong - use a single action, or
+  ask. A plan referencing a made-up id like "newly_created_task" fails at
+  execution and looks like the system did something it did not.
+- Plan ONLY what was asked. "create task" is one action, not create-then-
+  list-then-update. Extra steps nobody requested are failures waiting to
+  happen.
 Respond with ONLY valid JSON, no markdown, no explanations."""
 
 

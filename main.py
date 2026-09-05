@@ -1566,7 +1566,15 @@ class AutonomousSystemController:
                     # routing half of "it feels like two separate systems".
                     actions = self._recent_actions_context()
                     if actions:
-                        context_parts.append("Actions already performed:\n" + actions)
+                        # Labelled as evidence, not as a menu. Handing the
+                        # router a bare list of past work made it chain new
+                        # steps onto it - "create task" became create, then
+                        # list, then update a task id it invented.
+                        context_parts.append(
+                            "ACTIONS ALREADY PERFORMED (for answering questions "
+                            "about them - do NOT repeat these or chain new work "
+                            "onto them):\n" + actions
+                        )
                     last_summary = getattr(self, "_last_execution_summary", "") or ""
                     if last_summary:
                         context_parts.append(last_summary)
