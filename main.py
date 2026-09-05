@@ -158,7 +158,7 @@ class AutonomousSystemController:
 
     def __init__(self, config_path: str = None):
         config_path = config_path or DEFAULT_CONFIG_PATH
-        self._setup_logging()
+        self._setup_logging(config_path)
 
         logger.info("=" * 60)
         logger.info("AUTONOMOUS SYSTEM CONTROLLER v1.0")
@@ -262,14 +262,37 @@ class AutonomousSystemController:
         self._warm_up_lazy_agents()
         logger.info("=" * 60)
 
-    def _setup_logging(self):
-        """Configure console and file logging."""
+    def _setup_logging(self, config_path: str = None):
+        """Configure console and file logging.
+
+        Takes the path rather than reading self.config: this runs before
+        the config attribute exists, and load_config is cached, so
+        reading it here costs nothing.
+        """
 
         logger.remove()
+
+        # The console belongs to the user, not to us. Internal progress -
+        # which agent was constructed, which episode was recorded - is a
+        # fact about our implementation and not about their request, and
+        # printing it buried the one line they were waiting for.
+        #
+        # Everything still goes to the file at DEBUG, which is where it was
+        # always the right place for it. --verbose puts it back on screen.
+        try:
+            cfg = load_config(config_path or DEFAULT_CONFIG_PATH)
+        except Exception:
+            cfg = {}
+        console_level = str(
+            (cfg.get("system") or {}).get("console_log_level", "WARNING")
+        ).upper()
+        if "--verbose" in sys.argv or "--debug" in sys.argv:
+            console_level = "DEBUG"
+
         logger.add(
             sys.stdout,
             format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
-            level="INFO",
+            level=console_level,
         )
 
         Path("./logs").mkdir(exist_ok=True)
@@ -6562,12 +6585,22 @@ class AutonomousSystemController:
                 print(f"  {step_result}")
             return
 
+        # Anything the message already told the user is not worth repeating
+        # under a different label. Asking for 17 percent of 4500 printed the
+        # answer four times - as the message, then again as Result, Output
+        # and Expression - which reads as a system that does not know what
+        # it just said.
+        already_said = str(step_result.get("message") or "")
+
         for key, value in step_result.items():
             # _HANDLED_KEYS too: an explicit branch above already rendered
             # those, and printing them again gave "Files Found (1 total)"
             # immediately followed by "Files (1)".
             if (key in self._NOISE_KEYS or key in self._HANDLED_KEYS
                     or value in (None, "", [], {})):
+                continue
+            if (already_said and isinstance(value, (str, int, float))
+                    and str(value) in already_said):
                 continue
             label = key.replace("_", " ").title()
 

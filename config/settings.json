@@ -2,7 +2,8 @@
   "system": {
     "name": "Autonomous System Controller",
     "version": "1.0.0",
-    "mode": "development"
+    "mode": "development",
+    "console_log_level": "WARNING"
   },
   "llm_council": {
     "chairman": {
