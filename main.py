@@ -2018,6 +2018,28 @@ class AutonomousSystemController:
                 "by": "cpu" if kind in ("cpu", "processor") else "memory",
             }
 
+        # --- set the default browser ---------------------------------------
+        set_browser = re.search(
+            r"\b(?:set|change|make|use)\b[\w\s]{0,20}?\bdefault\s+browser\b"
+            r"[\w\s]{0,12}?\b(?:to|as|is)\b\s+(?P<name>[\w.+-]+)",
+            command, re.IGNORECASE,
+        )
+        if not set_browser:
+            set_browser = re.search(
+                r"\b(?:use|make)\s+(?P<name>[\w.+-]+)\s+(?:as\s+)?(?:my\s+|the\s+)?"
+                r"default\s+browser\b",
+                command, re.IGNORECASE,
+            )
+        if set_browser:
+            return {"type": "set_default_browser",
+                    "browser": set_browser.group("name").strip().lower()}
+
+        # --- which browsers are installed ----------------------------------
+        if re.search(r"\b(?:what|which)\b[\w\s]{0,20}?\bbrowsers?\b"
+                     r"[\w\s]{0,20}?\b(?:do\s+i\s+have|are\s+installed|"
+                     r"available|can\s+i\s+use)\b", command, re.IGNORECASE):
+            return {"type": "list_browsers"}
+
         # --- arithmetic ------------------------------------------------------
         # "what is 17 percent of 4500" was taking ~12 seconds because it
         # went to a language model. It is arithmetic. The sandbox evaluator
@@ -4157,6 +4179,12 @@ class AutonomousSystemController:
         elif intent_type == "top_processes":
             step_result = self._top_processes(intent.get("by", "memory"))
 
+        elif intent_type == "set_default_browser":
+            step_result = self._set_default_browser(intent.get("browser"))
+
+        elif intent_type == "list_browsers":
+            step_result = self._list_installed_browsers()
+
         elif intent_type == "calculate":
             from core.sandbox import evaluate_expression
             step_result = evaluate_expression(intent.get("expression", ""))
@@ -4827,6 +4855,84 @@ class AutonomousSystemController:
     # is present on every Windows install, so it is the safest last resort.
     _BROWSER_CANDIDATES = ("chrome", "msedge", "edge", "brave", "firefox",
                            "opera", "vivaldi")
+
+    def _installed_browsers(self) -> list:
+        """Which browsers are actually on this machine.
+
+        Uses the fast lookup deliberately: this answers "what do I have",
+        and a recursive scan per candidate would take a minute to answer a
+        question the user expects instantly.
+        """
+        system = self.agents["system"]
+        found = []
+        logger.disable("agents.system_agent")
+        try:
+            for name in self._BROWSER_CANDIDATES:
+                try:
+                    if system.find_application(name, deep=False):
+                        found.append(name)
+                except Exception:
+                    continue
+        finally:
+            logger.enable("agents.system_agent")
+        return found
+
+    def _set_default_browser(self, browser) -> Dict[str, Any]:
+        """Save which browser to use, and say whether it is actually there.
+
+        There was no action for this at all, so one phrasing reported
+        "Done." having done nothing. Saving the preference is the easy
+        part; the useful part is saying plainly when the chosen browser is
+        not installed, rather than letting every later browser command fail
+        for a reason the user cannot see.
+        """
+        name = str(browser or "").strip().lower()
+        if not name:
+            return {"success": False,
+                    "error": "Which browser should I use by default?"}
+
+        installed = self._installed_browsers()
+        self.memory.save_user_preference("default_browser", name)
+        self._default_browser_cache = name
+
+        if name in installed or any(name in b for b in installed):
+            return {
+                "success": True,
+                "default_browser": name,
+                "verified": True,
+                "message": f"Default browser set to {name}.",
+            }
+
+        # Saved, but it will not work. Say so now rather than at the next
+        # browser command.
+        available = ", ".join(installed) if installed else "none that I can find"
+        return {
+            "success": False,
+            "default_browser": name,
+            "installed_browsers": installed,
+            "error": (f"I saved {name} as your default, but it is not installed "
+                      f"on this machine, so browsing will fail. Installed: "
+                      f"{available}."),
+        }
+
+    def _list_installed_browsers(self) -> Dict[str, Any]:
+        """What is on the machine, not what is written in the config."""
+        installed = self._installed_browsers()
+        current = self.memory.get_user_preference("default_browser", None)
+        if not installed:
+            return {"success": False,
+                    "error": "I could not find any browser installed."}
+        message = "Installed browsers: " + ", ".join(installed) + "."
+        if current:
+            state = "and it is installed" if current in installed else \
+                    "but it is NOT installed"
+            message += f" Your default is set to {current}, {state}."
+        return {
+            "success": True,
+            "browsers": installed,
+            "default_browser": current,
+            "message": message,
+        }
 
     def _resolve_default_browser(self) -> str:
         """The browser to use when the user did not name one.
@@ -6984,6 +7090,10 @@ class AutonomousSystemController:
 
     # Keys that are bookkeeping, not results worth showing the user.
     _NOISE_KEYS = frozenset({
+        # Internal bookkeeping. "Verified: True" under a message that
+        # already says what happened is jargon, not information.
+        "verified", "partial_work_done", "misparse",
+
         "success", "tier", "complexity", "intent", "source", "params",
         "action", "action_type", "step", "steps", "steps_total",
         "steps_completed", "subtask_description", "message", "warning",
