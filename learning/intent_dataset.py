@@ -13,7 +13,8 @@ import json
 import re
 import sqlite3
 import sys
-from collections import Counter
+import random
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -29,7 +30,8 @@ import main as asc_module  # noqa: E402
 CONFIG_PATH = PROJECT_ROOT / "config" / "settings.json"
 OUTPUT_PATH = PROJECT_ROOT / "data" / "intent_corpus.jsonl"
 EPISODIC_DB = PROJECT_ROOT / "data" / "episodic_memory.db"
-MIN_PER_INTENT = 20
+MIN_PER_INTENT = 40
+MAX_PER_INTENT = 150
 PARAPHRASE_MODEL = "qwen2.5:3b"
 OLLAMA_PARAPHRASE_BUDGET = 6
 
@@ -126,6 +128,19 @@ def _dedupe(items: Iterable[str]) -> List[str]:
     return out
 
 
+def _dedupe_examples(items: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
+    seen = set()
+    out = []
+    for item in items:
+        command = " ".join((item.get("command") or "").strip().split())
+        intent = (item.get("intent") or "").strip()
+        key = (command.lower(), intent)
+        if command and intent and key not in seen:
+            seen.add(key)
+            out.append({"command": command, "intent": intent})
+    return out
+
+
 def _ollama_paraphrases(command: str, intent: str, host: str, limit: int = 4) -> List[str]:
     prompt = (
         "Create short paraphrases for an intent-classifier dataset.\n"
@@ -199,6 +214,114 @@ def _deterministic_paraphrases(command: str) -> List[str]:
     return _dedupe(variants)
 
 
+def _targeted_paraphrases(command: str) -> List[str]:
+    """Create broad but parser-checkable variants for data-starved intents."""
+
+    prefixes = [
+        "",
+        "please",
+        "can you",
+        "could you",
+        "hey vega",
+        "i need you to",
+        "quickly",
+        "for me",
+        "would you",
+        "when you can",
+        "right now",
+        "please quickly",
+    ]
+    suffixes = [
+        "",
+        "please",
+        "now",
+        "for me",
+        "on this computer",
+        "using the current context",
+        "when possible",
+        "and tell me when it is done",
+        "without extra questions",
+        "with default settings",
+        "from here",
+        "in this session",
+    ]
+    spoken = [
+        command.replace("show", "tell me", 1),
+        command.replace("create", "make", 1),
+        command.replace("list", "show me", 1),
+        command.replace("search", "look for", 1),
+        command.replace("remember", "remeber", 1),
+        f"uh {command}",
+        f"{command} pls",
+        f"{command} real quick",
+    ]
+
+    variants = list(spoken)
+    for prefix in prefixes:
+        for suffix in suffixes:
+            parts = [prefix, command, suffix]
+            variants.append(" ".join(part for part in parts if part).strip())
+    return _dedupe(variants)
+
+
+def _intent_specific_paraphrases(intent: str, command: str) -> List[str]:
+    """Fill sparse parser patterns with realistic values instead of duplicates."""
+
+    if intent == "calculate":
+        expressions = [
+            "2 plus 2",
+            "25 times 4",
+            "144 divided by 12",
+            "17 percent of 4500",
+            "the square root of 144",
+            "50 minus 18",
+            "9 multiplied by 8",
+            "100 divided by 4",
+            "12 plus 30",
+            "5 squared",
+        ]
+        return [f"{lead} {expr}".strip() for expr in expressions for lead in ["what is", "calculate", "compute", "evaluate"]]
+    if intent == "dns_lookup":
+        hosts = ["localhost", "google.com", "github.com", "openai.com", "example.com", "amazon.com", "microsoft.com", "python.org"]
+        return [f"{lead} {host}".strip() for host in hosts for lead in ["dns lookup for", "lookup dns for", "resolve dns for", "please dns lookup for", "can you dns lookup for"]]
+    if intent == "environment_variable":
+        variables = ["PATH", "TEMP", "USERNAME", "USERPROFILE", "APPDATA", "COMPUTERNAME", "OS", "PROCESSOR_ARCHITECTURE"]
+        return [f"{lead} {var}".strip() for var in variables for lead in ["show environment variable", "get environment variable", "print environment variable", "please show environment variable", "can you show environment variable"]]
+    if intent == "open_folder":
+        folders = ["downloads", "documents", "desktop", "pictures", "home", "download", "document"]
+        return [f"{lead} {folder} folder".strip() for folder in folders for lead in ["open the", "open", "please open the", "can you open the", "launch the"]]
+    if intent == "security_port_scan":
+        targets = ["127.0.0.1", "localhost", "192.168.1.1", "example.com", "github.com"]
+        ports = ["80-82", "443", "22-25", "8000-8002", "3000"]
+        return [f"{lead} {target} ports {port}" for target in targets for port in ports for lead in ["run security scan on", "security scan", "port scan"]]
+    if intent == "security_ssl_check":
+        hosts = ["github.com", "google.com", "openai.com", "example.com", "amazon.com", "microsoft.com", "python.org", "wikipedia.org"]
+        return [f"{lead} {host}".strip() for host in hosts for lead in ["check ssl on", "ssl check for", "verify ssl on", "please check ssl on", "can you check ssl on"]]
+    if intent == "system_command":
+        commands = ["Get-Date", "Get-Location", "whoami", "hostname", "ipconfig", "dir", "echo hello", "Get-Process", "Get-ChildItem", "pwd"]
+        return [f"{lead} {cmd}".strip() for cmd in commands for lead in ["run powershell", "execute powershell", "please run powershell", "can you run powershell"]]
+    if intent == "system_power_action":
+        actions = ["shutdown", "restart", "sleep", "hibernate", "lock"]
+        return [f"{lead} {action} system".strip() for action in actions for lead in ["", "please", "can you", "could you", "i need you to"]]
+    if intent == "transcription_noise":
+        noises = [
+            "(keyboard clicking)",
+            "[keyboard clicking]",
+            "(background noise)",
+            "[background noise]",
+            "(typing sounds)",
+            "[typing sounds]",
+            "(mouse click)",
+            "[mouse click]",
+            "(static)",
+            "[static]",
+            "(silence)",
+            "[silence]",
+        ]
+        return [f"{prefix} {noise} {suffix}".strip() for noise in noises for prefix in ["", "uh", "um", "sorry"] for suffix in ["", "again", "there"]]
+    return [command]
+
+
 def collect_seed_commands() -> List[str]:
     return _dedupe(
         [
@@ -210,7 +333,7 @@ def collect_seed_commands() -> List[str]:
     )
 
 
-def build_corpus(use_ollama: bool = True) -> Tuple[List[Dict[str, str]], Dict[str, int]]:
+def _build_raw_corpus(use_ollama: bool) -> Tuple[List[Dict[str, str]], Dict[str, int]]:
     controller = _controller()
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     host = config.get("ollama", {}).get("host", "http://127.0.0.1:11434")
@@ -237,6 +360,71 @@ def build_corpus(use_ollama: bool = True) -> Tuple[List[Dict[str, str]], Dict[st
     return corpus, dict(sorted(counts.items()))
 
 
+def _balance_corpus(raw_corpus: Sequence[Dict[str, str]], use_ollama: bool) -> Tuple[List[Dict[str, str]], Dict[str, int]]:
+    controller = _controller()
+    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    host = config.get("ollama", {}).get("host", "http://127.0.0.1:11434")
+    ollama_available = use_ollama and _has_ollama_model(host, PARAPHRASE_MODEL)
+    ollama_used = 0
+
+    by_intent: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+    for item in _dedupe_examples(raw_corpus):
+        by_intent[item["intent"]].append(item)
+
+    balanced: List[Dict[str, str]] = []
+    rng = random.Random(11)
+    for intent in sorted(by_intent):
+        examples = _dedupe_examples(by_intent[intent])
+        if len(examples) < MIN_PER_INTENT:
+            seeds = list(examples)
+            for seed in seeds:
+                for paraphrase in _intent_specific_paraphrases(intent, seed["command"]):
+                    if len(examples) >= MIN_PER_INTENT:
+                        break
+                    if _label(paraphrase, controller) == intent:
+                        examples.append({"command": paraphrase, "intent": intent})
+                        examples = _dedupe_examples(examples)
+                if len(examples) >= MIN_PER_INTENT:
+                    break
+            for seed in seeds:
+                for paraphrase in _targeted_paraphrases(seed["command"]):
+                    if len(examples) >= MIN_PER_INTENT:
+                        break
+                    # Parser verification is the guardrail: if a variant now
+                    # routes elsewhere, it is training poison and gets dropped.
+                    if _label(paraphrase, controller) == intent:
+                        examples.append({"command": paraphrase, "intent": intent})
+                        examples = _dedupe_examples(examples)
+                if len(examples) >= MIN_PER_INTENT:
+                    break
+
+            if ollama_available and len(examples) < MIN_PER_INTENT and ollama_used < OLLAMA_PARAPHRASE_BUDGET:
+                for seed in seeds:
+                    for paraphrase in _ollama_paraphrases(seed["command"], intent, host, limit=10):
+                        if len(examples) >= MIN_PER_INTENT:
+                            break
+                        if _label(paraphrase, controller) == intent:
+                            examples.append({"command": paraphrase, "intent": intent})
+                            examples = _dedupe_examples(examples)
+                    ollama_used += 1
+                    if len(examples) >= MIN_PER_INTENT or ollama_used >= OLLAMA_PARAPHRASE_BUDGET:
+                        break
+
+        if len(examples) > MAX_PER_INTENT:
+            rng.shuffle(examples)
+            examples = sorted(examples[:MAX_PER_INTENT], key=lambda item: item["command"].lower())
+        balanced.extend(examples)
+
+    corpus = sorted(_dedupe_examples(balanced), key=lambda item: (item["intent"], item["command"].lower()))
+    counts = Counter(item["intent"] for item in corpus)
+    return corpus, dict(sorted(counts.items()))
+
+
+def build_corpus(use_ollama: bool = True) -> Tuple[List[Dict[str, str]], Dict[str, int]]:
+    raw_corpus, _ = _build_raw_corpus(use_ollama=use_ollama)
+    return _balance_corpus(raw_corpus, use_ollama=use_ollama)
+
+
 def write_corpus(corpus: Sequence[Dict[str, str]], path: Path = OUTPUT_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
@@ -253,7 +441,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    corpus, counts = build_corpus(use_ollama=args.ollama)
+    raw_corpus, before_counts = _build_raw_corpus(use_ollama=args.ollama)
+    corpus, counts = _balance_corpus(raw_corpus, use_ollama=args.ollama)
     write_corpus(corpus)
 
     print(f"Wrote {len(corpus)} labelled examples to {OUTPUT_PATH}")
@@ -261,7 +450,12 @@ def main() -> int:
         print(f"Ollama paraphrase expansion enabled with model {PARAPHRASE_MODEL}.")
     else:
         print("Ollama paraphrase expansion skipped by default; rerun with --ollama for model-generated variants.")
-    print("\nPer-intent counts:")
+    print("\nDistribution before balancing:")
+    for intent, count in before_counts.items():
+        marker = "LOW" if count < MIN_PER_INTENT else "OK"
+        print(f"  {intent:30} {count:4} {marker}")
+
+    print("\nDistribution after balancing:")
     for intent, count in counts.items():
         marker = "LOW" if count < MIN_PER_INTENT else "OK"
         print(f"  {intent:30} {count:4} {marker}")

@@ -294,7 +294,13 @@ Rules:
         attempts: Dict[str, int] = {}
         failures: Dict[str, int] = {}
 
+        from core.progress import update as _progress
+
         for number in range(1, self.max_steps + 1):
+            # Say which step we are on. A compound instruction can take a
+            # while, and "step 3 of 6" is the difference between waiting
+            # and wondering whether it has died.
+            _progress(f"Step {number}: working out what to do")
             decision = await self._think(goal, result.steps)
             if decision is None:
                 result.stop_reason = "the model did not return a usable step"
@@ -313,6 +319,7 @@ Rules:
             if not action:
                 result.stop_reason = "model proposed a step with no action"
                 break
+            _progress(f"Step {number}: {action.replace('_', ' ')}")
             if action in self.EXCLUDED_ACTIONS:
                 result.stop_reason = f"'{action}' is not available to this loop"
                 break

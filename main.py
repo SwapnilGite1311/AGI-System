@@ -871,6 +871,21 @@ class AutonomousSystemController:
                     result = await self._execute_autonomous_decision(plan, command)
                     result["tier"] = "autonomous"
 
+                    # The planner keeps everything it is good at - asking
+                    # when a target is missing, honouring preferences,
+                    # deferring to the council when a form is ambiguous.
+                    # When it simply could not do the thing, the reasoning
+                    # loop gets a second attempt, because carrying one
+                    # step's result into the next is what it does and what
+                    # the planner does not.
+                    if (not result.get("success")
+                            and not result.get("needs_clarification")
+                            and self._react_loop_enabled()):
+                        retry = await self._run_react_loop(command)
+                        if retry.get("success"):
+                            retry["recovered_by"] = "react_loop"
+                            result = retry
+
             elif tier == "direct":
                 self.tier_stats["direct"] += 1
                 result = await self._execute_directly(command, strategy)
@@ -4456,6 +4471,59 @@ class AutonomousSystemController:
                 logger.debug("Agent warm-up skipped: {}", str(exc)[:120])
 
         threading.Thread(target=_warm, name="agent-warmup", daemon=True).start()
+
+    def _react_loop_enabled(self) -> bool:
+        """Whether compound instructions go to the reasoning loop.
+
+        A flag rather than a code change, so the execution path can be put
+        back without a deploy if it turns out worse in real use than it was
+        on the benchmark.
+        """
+        return bool((self.config.get("execution") or {}).get("use_react_loop", True))
+
+    async def _run_react_loop(self, command: str) -> Dict[str, Any]:
+        """Run one instruction through think/act/observe.
+
+        Falls back to the previous autonomous path on any failure: an
+        experiment in how instructions are executed must not be able to
+        make the system worse than it was.
+        """
+        from core.progress import update as _progress
+        from core.react_loop import ReactLoop
+
+        loop = getattr(self, "_react_loop", None)
+        if loop is None:
+            loop = self._react_loop = ReactLoop(self)
+
+        try:
+            _progress("Working out the steps")
+            outcome = await loop.run(command)
+            result = outcome.as_dict()
+            if result.get("success"):
+                return result
+
+            # The loop ran and did not get there. Say why rather than
+            # reporting a bare failure - "stopped after 6 steps" is
+            # actionable, "failed" is not.
+            logger.info("ReAct loop did not complete: {}", result.get("stop_reason"))
+            result.setdefault(
+                "error",
+                f"I worked through {result.get('steps_completed', 0)} step(s) and "
+                f"stopped: {result.get('stop_reason') or 'no further progress'}.",
+            )
+            return result
+        except Exception as exc:
+            logger.warning("ReAct loop failed ({}), using the planner instead: {}",
+                           type(exc).__name__, str(exc)[:120])
+            plan = self.autonomy.plan(
+                command,
+                direct_intent=None,
+                context=self._build_autonomy_context(),
+            )
+            fallback = await self._execute_autonomous_decision(plan, command)
+            fallback["tier"] = "autonomous"
+            fallback["react_fallback_reason"] = f"{type(exc).__name__}: {exc}"
+            return fallback
 
     def _build_tool_registry(self) -> ToolRegistry:
         """Build the explicit phase-2 tool boundary used by planners."""
