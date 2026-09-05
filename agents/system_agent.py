@@ -314,9 +314,22 @@ class SystemAgent:
 
     # ============= APPLICATION CONTROL =============
 
-    def find_application(self, app_name: str) -> Optional[str]:
-        """Find an application executable with caching."""
+    # Applications confirmed absent, so the expensive scan runs once per
+    # session rather than once per lookup. Not persisted: software gets
+    # installed, and a stale "not installed" would be worse than a slow
+    # first check.
+    _missing_apps: set = set()
+
+    def find_application(self, app_name: str, deep: bool = True) -> Optional[str]:
+        """Find an application executable, with caching.
+
+        `deep=False` skips the recursive filesystem scan. A miss on the deep
+        path costs up to 45 seconds - three roots, 15 second timeout each -
+        so callers that are merely checking what exists should not pay it.
+        """
         app_key = app_name.lower()
+        if app_key in self._missing_apps:
+            return None
         if app_key in self.app_cache:
             cached_path = self.app_cache[app_key]
             if os.path.exists(cached_path):
@@ -334,6 +347,10 @@ class SystemAgent:
             self.app_cache[app_key] = path_result
             self._save_app_cache()
             return path_result
+
+        if not deep:
+            # Fast callers stop here: PATH and configured paths only.
+            return None
 
         search_paths = [
             r"C:\Program Files",
@@ -367,6 +384,8 @@ class SystemAgent:
                     return str(shortcut)
         except Exception:
             pass
+        # Remember the miss so the next lookup does not rescan the disk.
+        self._missing_apps.add(app_key)
         logger.warning("Application not found: {}", app_name)
         return None
 
@@ -463,12 +482,46 @@ class SystemAgent:
                     process = subprocess.Popen(
                         ["cmd", "/c", "start", "", app_name, *(args or [])],
                         shell=False,
+                        # Detached, with its handles closed. "start" hands
+                        # the launch to a process that outlives cmd, and
+                        # that grandchild inherited our stdout pipe - so
+                        # anything capturing our output waited forever for a
+                        # pipe nobody was going to close. Interactively it
+                        # looked fine; piped or scripted, it hung.
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
                     self.managed_processes[process.pid] = process
+
+                    # Did anything actually start? "start" hands off, so the
+                    # only evidence is a process appearing. Give it a moment
+                    # and look.
+                    appeared = self._process_appeared(app_name, timeout=2.5)
+                    if not appeared and app_key in self._missing_apps:
+                        # Already known absent, and nothing started. That is
+                        # a failure, and saying so with alternatives beats a
+                        # success the user will discover is false.
+                        self.managed_processes.pop(process.pid, None)
+                        alternatives = self._similar_installed_applications(app_name)
+                        error = (f"'{app_name}' is not installed, and nothing "
+                                 "started when I asked Windows to open it.")
+                        if alternatives:
+                            error += f" You do have: {', '.join(alternatives)}."
+                        logger.warning("start fallback produced no process for {}", app_name)
+                        return {
+                            "success": False,
+                            "application": app_name,
+                            "error": error,
+                            "alternatives": alternatives,
+                        }
+
                     logger.success("Opened via start: {}", app_name)
                     return {
                         "success": True,
                         "application": app_name,
+                        "verified": bool(appeared),
                         # This is cmd.exe's pid, not the application's -
                         # "start" hands off and exits. Naming it honestly
                         # stops callers treating it as the app's process.
@@ -482,8 +535,16 @@ class SystemAgent:
                     }
                 except Exception as exc:
                     logger.warning("Windows start fallback failed for {}: {}", app_name, str(exc))
+            # Naming what IS available turns a dead end into something the
+            # user can act on. Someone whose default browser was uninstalled
+            # gets told which browsers they still have, rather than being
+            # left to guess why browsing stopped working.
+            alternatives = self._similar_installed_applications(app_name)
+            error = f"Application '{app_name}' is not installed on this system."
+            if alternatives:
+                error += f" Available instead: {', '.join(alternatives)}."
             return {"success": False, "application": app_name,
-                    "error": f"Application '{app_name}' not found on this system."}
+                    "error": error, "alternatives": alternatives}
         try:
             if exe.lower().endswith(".lnk"):
                 os.startfile(exe)
@@ -729,6 +790,72 @@ class SystemAgent:
                           f"processes; {len(survived)} are still running."),
             }
         return {"success": True, "killed": len(gone), "verified": True}
+
+    _APP_FAMILIES = {
+        "browser": ("chrome", "msedge", "firefox", "brave", "opera", "vivaldi"),
+        "editor": ("code", "notepad", "notepad++", "sublime_text"),
+        "terminal": ("wt", "cmd", "powershell"),
+    }
+
+    def _process_appeared(self, app_name: str, timeout: float = 2.5) -> bool:
+        """Whether a process matching `app_name` shows up within `timeout`.
+
+        The only evidence available after a hand-off launch. Matches on the
+        executable stem so "chrome" finds chrome.exe, and polls rather than
+        sleeping the whole timeout so a fast launch is detected fast.
+        """
+        stem = (app_name or "").strip().lower()
+        stem = stem[:-4] if stem.endswith(".exe") else stem
+        if not stem:
+            return False
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                for proc in psutil.process_iter(["name"]):
+                    name = (proc.info.get("name") or "").lower()
+                    if name.startswith(stem) or stem in name:
+                        return True
+            except Exception:
+                return False
+            time.sleep(0.25)
+        return False
+
+    def _similar_installed_applications(self, app_name: str) -> List[str]:
+        """Installed applications that do the same job as the missing one.
+
+        Probing is expected to miss, so it does so quietly - the point is to
+        tell the user what they DO have, not to narrate every failed lookup.
+        """
+        wanted = (app_name or "").strip().lower()
+        family = None
+        for name, members in self._APP_FAMILIES.items():
+            if wanted in members or wanted == name:
+                family = members
+                break
+        if not family:
+            return []
+
+        from loguru import logger as _logger
+        _logger.disable(__name__)
+        try:
+            found = []
+            for candidate in family:
+                if candidate == wanted:
+                    continue
+                try:
+                    # Fast path only: this is a "what do you have" question,
+                    # and answering it must not cost a recursive scan per
+                    # candidate. A browser installed somewhere unusual will
+                    # be missed here, which is an acceptable trade for an
+                    # error message that arrives promptly.
+                    if self.find_application(candidate, deep=False):
+                        found.append(candidate)
+                except Exception:
+                    continue
+            return found[:4]
+        finally:
+            _logger.enable(__name__)
 
     def search_applications(self, query: str = None) -> List[Dict[str, Any]]:
         """Search for installed applications."""

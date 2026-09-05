@@ -2719,7 +2719,7 @@ class AutonomousSystemController:
                 )
             return {
                 "type": "browser_action",
-                "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                "app": self._resolve_default_browser(),
                 "action": "navigate",
                 "target": target,
             }
@@ -2739,7 +2739,7 @@ class AutonomousSystemController:
                 target_url = self._build_search_target_for_site(target_url, query)
             return {
                 "type": "browser_action",
-                "app": app_name if app_name in self.BROWSER_APPS else self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                "app": app_name if app_name in self.BROWSER_APPS else self._resolve_default_browser(),
                 "action": "navigate",
                 "target": target_url,
             }
@@ -2758,7 +2758,7 @@ class AutonomousSystemController:
             target_url = self._build_search_target_for_site(site_url, query) if query else site_url
             return {
                 "type": "browser_action",
-                "app": app_name if app_name in self.BROWSER_APPS else self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                "app": app_name if app_name in self.BROWSER_APPS else self._resolve_default_browser(),
                 "action": "navigate",
                 "target": target_url,
             }
@@ -2799,7 +2799,7 @@ class AutonomousSystemController:
             # domain and silently discarding every clause after it.
             return {
                 "type": "browser_action",
-                "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                "app": self._resolve_default_browser(),
                 "action": "navigate",
                 "target": url_target,
             }
@@ -2837,7 +2837,7 @@ class AutonomousSystemController:
             site_url = "https://www.amazon.in" if site == "amazon" else "https://www.flipkart.com"
             return {
                 "type": "browser_action",
-                "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                "app": self._resolve_default_browser(),
                 "action": "navigate",
                 "target": self._build_search_target_for_site(site_url, ecommerce_only.group("query").strip()),
             }
@@ -2859,7 +2859,7 @@ class AutonomousSystemController:
                 if not (web_only.group(0).lower().startswith("google ") and target_text.split() and target_text.split()[0] in google_products):
                     return {
                         "type": "browser_action",
-                        "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                        "app": self._resolve_default_browser(),
                         "action": "search",
                         "target": target_text,
                     }
@@ -2877,7 +2877,7 @@ class AutonomousSystemController:
             if not re.search(r"\b(?:and|then)\s+(?:search|find|look up|go to|navigate|open)\b", target_text):
                 return {
                     "type": "browser_action",
-                    "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                    "app": self._resolve_default_browser(),
                     "action": "navigate",
                     "target": target_text,
                 }
@@ -3087,7 +3087,7 @@ class AutonomousSystemController:
         if "open youtube" in normalized and "search" not in normalized:
             return {
                 "type": "browser_action",
-                "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                "app": self._resolve_default_browser(),
                 "action": "navigate",
                 "target": "https://www.youtube.com",
             }
@@ -3095,7 +3095,7 @@ class AutonomousSystemController:
         if "open google" in normalized and "search" not in normalized:
             return {
                 "type": "browser_action",
-                "app": self.config.get("web_automation", {}).get("default_browser", "chrome"),
+                "app": self._resolve_default_browser(),
                 "action": "navigate",
                 "target": "https://www.google.com",
             }
@@ -3366,9 +3366,7 @@ class AutonomousSystemController:
             # Generic "browser" resolves to the user's saved preference
             # (autonomy saves this when they say 'use edge from now on').
             if app_name.lower() == "browser":
-                app_name = str(
-                    self.memory.get_user_preference("default_browser", "chrome")
-                ).strip() or "chrome"
+                app_name = self._resolve_default_browser()
             step_result = self.agents["system"].open_application(app_name, args=intent.get("args"))
 
         elif intent_type == "close_application":
@@ -4385,7 +4383,7 @@ class AutonomousSystemController:
             action = step_copy.get("action")
             params = dict(step_copy.get("params", {}))
             if action == "open" and not params.get("app"):
-                params["app"] = self.config.get("web_automation", {}).get("default_browser", "chrome")
+                params["app"] = self._resolve_default_browser()
                 changed = True
             elif action == "search" and not (params.get("query") or params.get("target")):
                 params["query"] = original_command
@@ -4777,6 +4775,88 @@ class AutonomousSystemController:
 
         logger.info("Intent classified as {} (margin {:.3f})", intent, margin)
         return {"type": intent, "source": "classifier", "margin": margin}
+
+    # Preference order when nothing else decides. Edge is first because it
+    # is present on every Windows install, so it is the safest last resort.
+    _BROWSER_CANDIDATES = ("chrome", "msedge", "edge", "brave", "firefox",
+                           "opera", "vivaldi")
+
+    def _resolve_default_browser(self) -> str:
+        """The browser to use when the user did not name one.
+
+        Resolved against what is actually installed rather than assumed.
+        "chrome" was hardcoded as the fallback in ten places; on a machine
+        without Chrome that aimed every browser operation at software that
+        is not there, and made "set the default browser" look broken when
+        the real problem was the default itself.
+
+        Cached per session: this shells out to locate executables, and the
+        set of installed browsers does not change mid-conversation.
+        """
+        cached = getattr(self, "_default_browser_cache", None)
+        if cached:
+            return cached
+
+        # This is reached from the parsing path, which is exercised against
+        # a bare controller in tests and could be called before the agents
+        # exist. Missing collaborators mean "cannot check", not a crash.
+        memory = getattr(self, "memory", None)
+        agents = getattr(self, "agents", None)
+
+        def installed(name: str) -> bool:
+            if agents is None:
+                return False
+            # Probing is expected to miss - that is what probing is - so it
+            # must not narrate a warning per candidate. Looking for Chrome
+            # and not finding it is the normal path on a machine without
+            # Chrome, not something to tell the user about.
+            logger.disable("agents.system_agent")
+            try:
+                return bool(self.agents["system"]._resolve_application_executable(name))
+            except Exception:
+                return False
+            finally:
+                logger.enable("agents.system_agent")
+
+        # An explicit choice is honoured unconditionally. If the user said
+        # "use edge from now on", using something else because a probe could
+        # not confirm edge exists is worse than trying and failing with a
+        # clear message - silently substituting for an explicit instruction
+        # is never the right call.
+        preferred = (memory.get_user_preference("default_browser", None)
+                     if memory is not None else None)
+        if preferred:
+            chosen = str(preferred).strip().lower()
+            self._default_browser_cache = chosen
+            return chosen
+
+        candidates = []
+        configured = (self.config.get("web_automation") or {}).get("default_browser")
+        if configured:
+            candidates.append(str(configured).strip().lower())
+        candidates.extend(self._BROWSER_CANDIDATES)
+
+        if agents is None:
+            return str(configured or "chrome").strip().lower()
+
+        seen = set()
+        for name in candidates:
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            if installed(name):
+                if name != candidates[0]:
+                    logger.info("Default browser resolved to {} ({} unavailable)",
+                                name, candidates[0])
+                self._default_browser_cache = name
+                return name
+
+        # Nothing found. Return the configured value so the error the user
+        # sees names what was actually attempted.
+        fallback = configured or "chrome"
+        logger.warning("No installed browser found; falling back to {}", fallback)
+        self._default_browser_cache = fallback
+        return fallback
 
     def _build_tool_registry(self) -> ToolRegistry:
         """Build the explicit phase-2 tool boundary used by planners."""
