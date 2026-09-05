@@ -765,6 +765,11 @@ class AutonomousSystemController:
 
         logger.info("Processing command: {}", command[:100])
         command = self._resolve_pending_clarification(command)
+        # Handlers need to be able to compare what they are about to do
+        # against what was actually asked. Without this, a task whose title
+        # IS the whole request looks perfectly valid from inside the task
+        # handler.
+        self._current_command = command
         self.memory.remember_short_term("last_command", command)
         self.memory.log_session_activity(command)
 
@@ -2144,7 +2149,8 @@ class AutonomousSystemController:
             command, re.IGNORECASE,
         )
         if done:
-            return {"type": "complete_task", "title": done.group("title").strip()}
+            return {"type": "complete_task",
+                    "title": self._strip_record_lead_in(done.group("title"))}
 
         # --- read the screen: OCR, not a web search ------------------------
         # "read the text on my screen" was routed to web search and failed
@@ -5165,6 +5171,24 @@ class AutonomousSystemController:
                 result["message"] = f"Searched {host} for {query!r}"
         return result
 
+    @staticmethod
+    def _strip_record_lead_in(title: str) -> str:
+        """Drop the phrasing words in front of a record's actual name.
+
+        "mark the task call the vendor as done" names a task called "call
+        the vendor" - "the task" is how the sentence points at it, not part
+        of what it is called. Keeping it meant the lookup searched for a
+        task nobody had created.
+        """
+        cleaned = (title or "").strip().strip("\"'")
+        for lead in ("the task named ", "the task called ", "the task ",
+                     "task named ", "task called ", "task ",
+                     "my task ", "the item ", "item "):
+            if cleaned.lower().startswith(lead):
+                cleaned = cleaned[len(lead):].strip()
+                break
+        return cleaned
+
     def _locate_named_file(self, filename: str, where: Optional[str] = None) -> Optional[Path]:
         """Find a file the user named, searching the places they mean.
 
@@ -5498,6 +5522,31 @@ class AutonomousSystemController:
                 body=params.get("body") or context,
             )
         if action_type in ("create_task", "task", "add_task"):
+            # A title identical to the whole request means the router did
+            # not understand it. "count how many tasks I have and save that
+            # number to a file" became a TASK with that as its name, and
+            # reported success - nothing counted, nothing saved, and a
+            # nonsense record left behind. Refuse rather than store the
+            # confusion.
+            proposed = str(params.get("title") or params.get("name") or "").strip()
+            requested = str(params.get("description")
+                            or params.get("context")
+                            or getattr(self, "_current_command", "") or "").strip()
+            if proposed and requested:
+                a = " ".join(proposed.lower().split())
+                b = " ".join(requested.lower().split())
+                if a == b and len(a.split()) > 6:
+                    return {
+                        "success": False,
+                        "error": (
+                            "I was about to create a task named after your "
+                            "whole request, which means I did not understand "
+                            "it. Could you tell me what you want done?"
+                        ),
+                        "misparse": True,
+                        "proposed_title": proposed,
+                    }
+
             title = params.get("title") or params.get("target") or context or "New task"
             return business.create_task(title=title, description=context)
         if action_type in ("list_tasks", "tasks"):
