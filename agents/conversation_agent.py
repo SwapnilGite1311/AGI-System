@@ -194,6 +194,13 @@ class ConversationAgent:
             for item in self.history[-self.history_limit:]
         )
         capability_summary = self._capability_summary(context)
+
+        # What the system actually DID recently, as distinct from what it
+        # said. Chat history alone cannot answer "where did you save it",
+        # because writing a file is not a conversational turn.
+        actions = ""
+        if context:
+            actions = str(context.get("recent_actions") or "").strip()
         cap = self._sentence_cap_for(message)
         wants_detail = cap != self.BRIEF_SENTENCE_CAP
         length_rule = (
@@ -215,6 +222,12 @@ Capabilities:
 
 Recent conversation:
 {recent or "No prior conversation."}
+
+What you actually did recently (this is a factual record - if the user asks
+where something was saved or whether something worked, the answer is here.
+Never invent a path, a filename or an outcome that does not appear below;
+if it is not here, say plainly that you do not have a record of it):
+{actions or "No actions performed yet this session."}
 
 User: {message}
 

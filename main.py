@@ -6,6 +6,7 @@ handling, and decomposed multi-step task execution.
 
 import asyncio
 import json
+from collections import deque
 import os
 import re
 import struct
@@ -133,6 +134,18 @@ class _LazyAgents:
         return list(self._cache.keys())
 
 
+# Openers that make a sentence a question about something rather than an
+# instruction to do something. Used to keep the intent classifier away from
+# conversational turns: it is a nearest-centroid model, so it always has a
+# nearest centroid, and "where did you put it" is closer to stock_api than
+# to nothing at all.
+_QUESTION_OPENER = re.compile(
+    r"^\s*(?:where|what|which|who|whom|whose|when|why|how|did|do|does|"
+    r"have|has|had|are|is|was|were|can|could|would|should|will|shall)\b",
+    re.IGNORECASE,
+)
+
+
 class AutonomousSystemController:
     """Main VEGA controller and execution orchestrator."""
 
@@ -173,6 +186,10 @@ class AutonomousSystemController:
         self.autonomy = AutonomyEngine(self.task_decomposer, self.get_tool_manifest)
         self.intent_router = LLMIntentRouter(self.config, self.get_tool_manifest)
         self._last_execution_summary = ""
+        # What the system has actually DONE recently, as opposed to what it
+        # has said. The conversational model needs this to answer "where did
+        # you save it" without inventing an answer.
+        self._recent_actions: "deque[Dict[str, Any]]" = deque(maxlen=8)
 
         logger.info("Initializing agents...")
         conversation_agent = ConversationAgent(config_path)
@@ -863,7 +880,12 @@ class AutonomousSystemController:
             elif tier == "conversation":
                 result = await self.agents["conversation"].chat(
                     command,
-                    context={"tools": self.get_tool_manifest()},
+                    context={
+                        "tools": self.get_tool_manifest(),
+                        # What was actually done, so questions about it are
+                        # answered from a record rather than invented.
+                        "recent_actions": self._recent_actions_context(),
+                    },
                 )
                 plan = {
                     "tier": tier,
@@ -977,6 +999,7 @@ class AutonomousSystemController:
             # Remember what we just did so follow-ups ("email that to raj")
             # can resolve pronouns against the last result.
             self._last_execution_summary = self._summarize_result(result)
+            self._record_action(command, result)
 
             # Outcome verification: one cheap follow-up call checking whether
             # the result actually satisfies what was asked, not just whether
@@ -1137,6 +1160,70 @@ class AutonomousSystemController:
             return " | ".join(summary_bits)[:600]
         except Exception:
             return ""
+
+    _ARTIFACT_KEYS = ("path", "filepath", "file_path", "backup_path",
+                      "destination", "saved_path", "url", "final_url")
+
+    def _record_action(self, command: str, result: Dict[str, Any]) -> None:
+        """Remember what was DONE, so the conversation can talk about it.
+
+        Chat history alone was not enough: it records what was said, and a
+        file being written is not something that was said. Artefact paths
+        are pulled out explicitly because "where did you put it" is the
+        follow-up people actually ask, and a model with no record of the
+        path will confidently make one up.
+        """
+        try:
+            if (result.get("tier") == "conversation"
+                    or result.get("mode") == "chat"):
+                return  # talking is already in the chat history
+
+            artifacts = []
+
+            def _harvest(node, depth=0):
+                if depth > 3 or len(artifacts) >= 6:
+                    return
+                if isinstance(node, dict):
+                    for key in self._ARTIFACT_KEYS:
+                        value = node.get(key)
+                        if isinstance(value, str) and value.strip():
+                            if value not in artifacts:
+                                artifacts.append(value)
+                    for value in node.values():
+                        if isinstance(value, (dict, list)):
+                            _harvest(value, depth + 1)
+                elif isinstance(node, list):
+                    for item in node[:8]:
+                        _harvest(item, depth + 1)
+
+            _harvest(result)
+
+            self._recent_actions.append({
+                "command": command[:200],
+                "succeeded": bool(result.get("success")),
+                "summary": (self._summarize_result(result) or "")[:300],
+                "artifacts": artifacts[:6],
+                "error": str(result.get("error") or "")[:200],
+            })
+        except Exception as exc:
+            logger.debug("Could not record action for context: {}", str(exc)[:100])
+
+    def _recent_actions_context(self) -> str:
+        """The recent actions, written for a model to read as fact."""
+        if not self._recent_actions:
+            return ""
+        lines = []
+        for entry in list(self._recent_actions)[-5:]:
+            status = "succeeded" if entry["succeeded"] else "FAILED"
+            line = f"- \"{entry['command']}\" -> {status}"
+            if entry["artifacts"]:
+                line += f" (produced: {', '.join(entry['artifacts'][:3])})"
+            elif entry["summary"]:
+                line += f" ({entry['summary'][:120]})"
+            if not entry["succeeded"] and entry["error"]:
+                line += f" [error: {entry['error'][:100]}]"
+            lines.append(line)
+        return "\n".join(lines)
 
     def _record_learning(self, command: str, strategy: Dict[str, Any], result: Dict[str, Any]):
         """Record command learning without letting storage failures break execution."""
@@ -4623,6 +4710,14 @@ class AutonomousSystemController:
         if cls._classifier is False:
             return None
 
+        # A question ABOUT something is not an instruction to do something.
+        # "where have u stored" was classified as stock_api and acted on,
+        # because a nearest-centroid model must return its nearest centroid
+        # even when nothing is close. It has no way to say "this is not a
+        # command at all", so that judgement has to happen out here.
+        if _QUESTION_OPENER.match(command or ""):
+            return None
+
         try:
             prediction = cls._classifier.predict(command)
         except Exception as exc:
@@ -4631,7 +4726,7 @@ class AutonomousSystemController:
 
         intent = prediction.get("intent")
         margin = float(prediction.get("margin") or 0.0)
-        threshold = float(execution.get("intent_classifier_margin", 0.12))
+        threshold = float(execution.get("intent_classifier_margin", 0.20))
 
         if (not intent or intent == "unknown"
                 or intent not in (cls._argument_free_intents or set())

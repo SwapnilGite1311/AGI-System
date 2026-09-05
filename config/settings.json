@@ -84,7 +84,7 @@
     "decompose_complex_tasks": true,
     "use_react_loop": true,
     "use_intent_classifier": true,
-    "intent_classifier_margin": 0.12
+    "intent_classifier_margin": 0.2
   },
   "web_automation": {
     "default_browser": "chrome",
